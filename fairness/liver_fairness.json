@@ -1,1 +1,13 @@
-{"dpd": 0.021527247558726315, "bias": "Low"}
+{
+    "age_fairness": {
+        "group_accuracy": {
+            "40-60": 0.656,
+            "Above 60": 0.642,
+            "Under 40": 0.631
+        },
+        "demographic_parity_difference": 0.0283,
+        "equalized_odds_difference": 0.0383,
+        "max_accuracy_gap": 0.0253,
+        "bias_risk": "Low"
+    }
+}
