@@ -1,13 +1,13 @@
 {
     "age_fairness": {
         "group_accuracy": {
-            "40-60": 0.752,
-            "Above 60": 0.57,
-            "Under 40": 0.921
+            "40-60": 0.945,
+            "Above 60": 0.807,
+            "Under 40": 0.988
         },
-        "demographic_parity_difference": 0.57,
-        "equalized_odds_difference": 0.7917,
-        "max_accuracy_gap": 0.3507,
+        "demographic_parity_difference": 0.1628,
+        "equalized_odds_difference": 0.383,
+        "max_accuracy_gap": 0.1811,
         "bias_risk": "High"
     }
 }
