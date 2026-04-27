@@ -1,0 +1,38 @@
+{
+    "disease": "liver",
+    "model": "rf",
+    "base_value": 0.49993526492899093,
+    "feature_importance": {
+        "Direct Bilirubin": 0.070774,
+        "Total Bilirubin": 0.067473,
+        "Sgpt Alamine Aminotransferase": 0.053591,
+        "Alkphos Alkaline Phosphotase": 0.052041,
+        "Sgot Aspartate Aminotransferase": 0.048377,
+        "A/G Ratio Albumin and Globulin Ratio": 0.01857,
+        "ALB Albumin": 0.016165,
+        "Total Protiens": 0.013709,
+        "Age of the patient": 0.000163,
+        "Gender": 4e-05
+    },
+    "top_5_features": [
+        "Direct Bilirubin",
+        "Total Bilirubin",
+        "Sgpt Alamine Aminotransferase",
+        "Alkphos Alkaline Phosphotase",
+        "Sgot Aspartate Aminotransferase"
+    ],
+    "top_10_features": [
+        "Direct Bilirubin",
+        "Total Bilirubin",
+        "Sgpt Alamine Aminotransferase",
+        "Alkphos Alkaline Phosphotase",
+        "Sgot Aspartate Aminotransferase",
+        "A/G Ratio Albumin and Globulin Ratio",
+        "ALB Albumin",
+        "Total Protiens",
+        "Age of the patient",
+        "Gender"
+    ],
+    "n_features": 10,
+    "n_samples_used": 500
+}

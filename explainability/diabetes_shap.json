@@ -1,0 +1,49 @@
+{
+    "disease": "diabetes",
+    "model": "xgb",
+    "base_value": 2.481387138366699,
+    "feature_importance": {
+        "GenHlth": 0.662214,
+        "BMI": 0.465746,
+        "HighBP": 0.414685,
+        "Age": 0.39504,
+        "HighChol": 0.323865,
+        "Sex": 0.142528,
+        "Income": 0.140469,
+        "MentHlth": 0.112408,
+        "HeartDiseaseorAttack": 0.092723,
+        "PhysHlth": 0.089998,
+        "DiffWalk": 0.08534,
+        "CholCheck": 0.085177,
+        "HvyAlcoholConsump": 0.076616,
+        "Education": 0.0646,
+        "Smoker": 0.041703,
+        "Fruits": 0.034555,
+        "Stroke": 0.031798,
+        "PhysActivity": 0.031366,
+        "Veggies": 0.03106,
+        "NoDocbcCost": 0.030266,
+        "AnyHealthcare": 0.021111
+    },
+    "top_5_features": [
+        "GenHlth",
+        "BMI",
+        "HighBP",
+        "Age",
+        "HighChol"
+    ],
+    "top_10_features": [
+        "GenHlth",
+        "BMI",
+        "HighBP",
+        "Age",
+        "HighChol",
+        "Sex",
+        "Income",
+        "MentHlth",
+        "HeartDiseaseorAttack",
+        "PhysHlth"
+    ],
+    "n_features": 21,
+    "n_samples_used": 500
+}

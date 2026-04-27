@@ -1,0 +1,52 @@
+{
+    "disease": "kidney",
+    "model": "lr",
+    "base_value": 0.6145878063156602,
+    "feature_importance": {
+        "sg": 0.105292,
+        "pcv": 0.064805,
+        "dm": 0.048965,
+        "sc": 0.048296,
+        "appet": 0.040569,
+        "htn": 0.032291,
+        "al": 0.030115,
+        "sod": 0.024603,
+        "pot": 0.012303,
+        "hemo": 0.011796,
+        "rbcc": 0.010451,
+        "wbcc": 0.01007,
+        "ane": 0.008327,
+        "pe": 0.005733,
+        "rbc": 0.00566,
+        "pc": 0.004336,
+        "age": 0.003923,
+        "su": 0.002932,
+        "bp": 0.001057,
+        "bgr": 0.000554,
+        "pcc": 0.000319,
+        "ba": 8.1e-05,
+        "bu": 7.9e-05,
+        "cad": 0.0
+    },
+    "top_5_features": [
+        "sg",
+        "pcv",
+        "dm",
+        "sc",
+        "appet"
+    ],
+    "top_10_features": [
+        "sg",
+        "pcv",
+        "dm",
+        "sc",
+        "appet",
+        "htn",
+        "al",
+        "sod",
+        "pot",
+        "hemo"
+    ],
+    "n_features": 24,
+    "n_samples_used": 80
+}

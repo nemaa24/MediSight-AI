@@ -1,0 +1,53 @@
+{
+    "disease": "heart",
+    "model": "lr",
+    "base_value": 0.34220596113536084,
+    "feature_importance": {
+        "AgeCategory": 0.145902,
+        "GeneralHealth": 0.076706,
+        "ChestScan": 0.074102,
+        "Sex": 0.064878,
+        "HadDiabetes": 0.013618,
+        "HadArthritis": 0.013195,
+        "AlcoholDrinkers": 0.01081,
+        "SmokerStatus": 0.008252,
+        "HadDepressiveDisorder": 0.005745,
+        "HadStroke": 0.005305,
+        "HadCOPD": 0.00475,
+        "SleepHours": 0.003133,
+        "HadKidneyDisease": 0.002734,
+        "PhysicalActivities": 0.001465,
+        "BMI": 0.001343,
+        "DifficultyConcentrating": 0.001171,
+        "DifficultyWalking": 0.001171,
+        "PhysicalHealthDays": 0.001001,
+        "HadAsthma": 0.000916,
+        "DifficultyErrands": 0.000855,
+        "BlindOrVisionDifficulty": 0.00074,
+        "DeafOrHardOfHearing": 0.000558,
+        "DifficultyDressingBathing": 0.000514,
+        "MentalHealthDays": 0.000407,
+        "HadSkinCancer": 0.0
+    },
+    "top_5_features": [
+        "AgeCategory",
+        "GeneralHealth",
+        "ChestScan",
+        "Sex",
+        "HadDiabetes"
+    ],
+    "top_10_features": [
+        "AgeCategory",
+        "GeneralHealth",
+        "ChestScan",
+        "Sex",
+        "HadDiabetes",
+        "HadArthritis",
+        "AlcoholDrinkers",
+        "SmokerStatus",
+        "HadDepressiveDisorder",
+        "HadStroke"
+    ],
+    "n_features": 25,
+    "n_samples_used": 200
+}
