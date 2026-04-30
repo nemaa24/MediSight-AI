@@ -11,5 +11,6 @@ imbalanced-learn
 xgboost
 plotly
 fpdf2
+reportlab>=4.0.0
 joblib
 scipy
