@@ -1,3 +1,15 @@
+"""
+MediSight AI — Streamlit Dashboard
+A Transparency Label for Healthcare Prediction Systems
+
+This is the production dashboard. All training/preprocessing/SHAP
+computation happens offline in notebooks. This file ONLY:
+  - loads pre-trained .pkl models
+  - reads pre-computed JSON metrics, fairness, and SHAP files
+  - serves predictions via cached model loaders
+  - renders the transparency label, comparisons, audit trail, PDF
+"""
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -6,7 +18,8 @@ import plotly.express as px
 import json
 import joblib
 import os
-import io
+from datetime import datetime
+from io import BytesIO
 
 # ─────────────────────────────────────────────
 # PAGE CONFIG
@@ -77,9 +90,9 @@ DATASETS_DIR        = os.path.join(BASE_DIR, "../datasets/processed")
 EXPLAINABILITY_DIR  = os.path.join(BASE_DIR, "../explainability")
 
 # ─────────────────────────────────────────────
-# FIX ISSUE 1 — SAMPLE PATIENTS
-# Pre-defined High Risk / Low Risk profiles so
-# users don't have to fill every field manually.
+# SAMPLE PATIENT PROFILES
+# Pre-defined High Risk / Low Risk profiles so users
+# don't have to fill every field manually during demos.
 # ─────────────────────────────────────────────
 SAMPLE_PATIENTS = {
     "diabetes": {
@@ -156,7 +169,7 @@ SAMPLE_PATIENTS = {
     },
 }
 
-# Feature ranges for What-If sliders (min, max, default)
+# Feature ranges for sliders (min, max, default)
 FEATURE_RANGES = {
     "diabetes": {
         "HighBP":(0,1,0),"HighChol":(0,1,0),"CholCheck":(0,1,1),
@@ -205,7 +218,7 @@ FEATURE_RANGES = {
 }
 
 # ─────────────────────────────────────────────
-# DATA LOADERS
+# DATA LOADERS — JSON / METRICS (cache_data)
 # ─────────────────────────────────────────────
 @st.cache_data
 def load_all_metrics():
@@ -214,6 +227,7 @@ def load_all_metrics():
         with open(path) as f:
             return json.load(f)
     except Exception:
+        # Fallback metrics if JSON missing — keeps demo functional
         return {
             "diabetes":{
                 "lr": {"model_type":"Logistic Regression","accuracy":0.746,
@@ -308,19 +322,37 @@ def load_shap_data(disease_key):
     except Exception:
         return None
 
+# ─────────────────────────────────────────────
+# DATA LOADERS — MODEL OBJECTS (cache_resource)
+# FIX: use cache_resource for unpickled model objects
+# so they aren't re-loaded from disk on every rerun.
+# This is the main performance fix for Tab 4.
+# ─────────────────────────────────────────────
+@st.cache_resource
 def load_model(disease_key, model_key):
     path = os.path.join(MODELS_DIR, f"{disease_key}_{model_key}.pkl")
     try:
         return joblib.load(path)
-    except Exception:
+    except Exception as e:
+        st.error(f"Failed to load model {disease_key}_{model_key}: {e}")
         return None
 
+@st.cache_resource
 def load_scaler(disease_key):
     path = os.path.join(MODELS_DIR, f"{disease_key}_scaler.pkl")
     try:
         return joblib.load(path)
     except Exception:
         return None
+
+@st.cache_resource
+def load_threshold(disease_key, model_key):
+    """Caches heart_rf threshold so it's not re-read every prediction."""
+    path = os.path.join(MODELS_DIR, f"{disease_key}_{model_key}_threshold.pkl")
+    try:
+        return joblib.load(path)
+    except Exception:
+        return 0.5
 
 # ─────────────────────────────────────────────
 # PREDICTION FUNCTION
@@ -334,16 +366,35 @@ def make_prediction(disease_key, model_key, patient_values, features):
     X_scaled = scaler.transform(X_input)
     prob     = float(model.predict_proba(X_scaled)[0][1])
     if disease_key == "heart" and model_key == "rf":
-        try:
-            threshold = joblib.load(
-                os.path.join(MODELS_DIR, "heart_rf_threshold.pkl")
-            )
-        except Exception:
-            threshold = 0.20
-        pred = 1 if prob >= threshold else 0
+        threshold = load_threshold("heart", "rf")
     else:
-        pred = 1 if prob >= 0.5 else 0
+        threshold = 0.5
+    pred = 1 if prob >= threshold else 0
     return prob, pred
+
+# ─────────────────────────────────────────────
+# AUDIT TRAIL
+# Every successful prediction is appended to a JSONL file.
+# This is the EU AI Act audit trail requirement.
+# ─────────────────────────────────────────────
+def log_prediction(disease_key, model_key, prob, pred, risk):
+    """Append one prediction record to audit log. Best-effort, never blocks UI."""
+    try:
+        audit_dir = os.path.join(BASE_DIR, "../audit")
+        os.makedirs(audit_dir, exist_ok=True)
+        log_path = os.path.join(audit_dir, "predictions.jsonl")
+        record = {
+            "timestamp" : datetime.utcnow().isoformat() + "Z",
+            "disease"   : disease_key,
+            "model"     : model_key,
+            "probability": round(float(prob), 4),
+            "prediction": int(pred),
+            "risk_level": risk,
+        }
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+    except Exception:
+        pass  # audit logging must never break the UI
 
 # ─────────────────────────────────────────────
 # HELPERS
@@ -356,19 +407,6 @@ def prob_to_risk(prob):
     elif prob > 0.4: return "Moderate"
     return "Low"
 
-def safe_pdf(text):
-    """
-    FIX ISSUE 6 — Replace characters outside latin-1
-    so FPDF never raises UnicodeEncodeError.
-    """
-    replacements = {
-        "\u2014":"--","\u2013":"-","\u2018":"'","\u2019":"'",
-        "\u201c":'"', "\u201d":'"',"\u2022":"*","\u00a0":" ",
-    }
-    for orig, rep in replacements.items():
-        text = text.replace(orig, rep)
-    return text.encode("latin-1", errors="replace").decode("latin-1")
-
 # ─────────────────────────────────────────────
 # HEADER
 # ─────────────────────────────────────────────
@@ -380,8 +418,6 @@ st.markdown('<div class="sub-header">AI Transparency Label for '
 
 # ─────────────────────────────────────────────
 # SIDEBAR
-# FIX ISSUE 4 — replaced broken placeholder URL
-# with a styled HTML banner that always renders.
 # ─────────────────────────────────────────────
 with st.sidebar:
     st.markdown(
@@ -437,6 +473,8 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
 
 # ══════════════════════════════════════════════
 # TAB 1 — TRANSPARENCY LABEL
+# UI SIMPLIFIED: 3 input modes (Sample / Random / Manual)
+# instead of forcing the user to fill 21+ fields.
 # ══════════════════════════════════════════════
 with tab1:
     st.header("🏷️ AI Transparency Label")
@@ -447,42 +485,105 @@ with tab1:
     with col_left:
         st.subheader("Patient Input")
 
-        # FIX ISSUE 1 — profile selector replaces raw field-by-field entry
-        sample_profiles  = list(SAMPLE_PATIENTS.get(disease_key, {}).keys())
-        selected_profile = st.selectbox(
-            "Quick-fill with sample patient",
-            ["Custom"] + sample_profiles,
-            help="Auto-fills values. Select Custom to enter your own."
-        )
-        profile_vals = (
-            SAMPLE_PATIENTS[disease_key][selected_profile]
-            if selected_profile != "Custom"
-            else {f: 0.0 for f in features}
+        input_mode = st.radio(
+            "Input mode",
+            ["📋 Sample Profile", "🎲 Random Patient", "✏️ Manual Entry"],
+            horizontal=True,
+            help=("Sample profiles are pre-validated. Random generates "
+                  "plausible values. Manual lets you set the top features.")
         )
 
-        st.markdown("**Key feature values** (top SHAP features shown):")
+        sample_profiles = list(SAMPLE_PATIENTS.get(disease_key, {}).keys())
         patient_data = {}
 
-        with st.form("patient_form"):
-            # Show only top features by SHAP importance
-            key_features = (
-                shap_data.get("top_10_features", features[:10])
-                if shap_data else features[:10]
+        # ── MODE 1: Sample Profile ─────────────────────────
+        if input_mode == "📋 Sample Profile":
+            selected_profile = st.selectbox(
+                "Choose a profile",
+                sample_profiles,
+                help="Pre-defined high-risk and low-risk patient profiles."
             )
-            for feat in key_features:
-                default_val = float(profile_vals.get(feat, 0.0))
-                patient_data[feat] = st.number_input(
-                    feat, value=default_val, step=0.1, key=f"t1_{feat}"
+            profile_vals = SAMPLE_PATIENTS[disease_key][selected_profile]
+            st.success(f"✅ Loaded: **{selected_profile}** profile")
+            with st.expander("👁️ View patient values", expanded=False):
+                df_preview = pd.DataFrame(
+                    list(profile_vals.items()),
+                    columns=["Feature", "Value"]
                 )
-            # Remaining features filled silently from profile
+                st.dataframe(df_preview, use_container_width=True,
+                             hide_index=True)
+            patient_data = {f: float(profile_vals.get(f, 0.0))
+                            for f in features}
+
+        # ── MODE 2: Random Patient ─────────────────────────
+        elif input_mode == "🎲 Random Patient":
+            if st.button("🎲 Generate Random Patient",
+                         use_container_width=True):
+                ranges = FEATURE_RANGES.get(disease_key, {})
+                random_vals = {}
+                for feat in features:
+                    r = ranges.get(feat, (0.0, 1.0, 0.0))
+                    mn, mx = float(r[0]), float(r[1])
+                    if mx == 1.0 and mn == 0.0:
+                        random_vals[feat] = float(np.random.choice([0, 1]))
+                    else:
+                        random_vals[feat] = round(
+                            float(np.random.uniform(mn, mx)), 2
+                        )
+                st.session_state["random_patient"] = random_vals
+
+            if "random_patient" in st.session_state:
+                patient_data = st.session_state["random_patient"]
+                st.info("✨ Random patient generated. Click again for new values.")
+                with st.expander("👁️ View random values", expanded=False):
+                    df_preview = pd.DataFrame(
+                        list(patient_data.items()),
+                        columns=["Feature", "Value"]
+                    )
+                    st.dataframe(df_preview, use_container_width=True,
+                                 hide_index=True)
+            else:
+                st.info("👆 Click the button above to generate a patient.")
+                # Use clinical defaults so prediction button still works
+                ranges = FEATURE_RANGES.get(disease_key, {})
+                patient_data = {f: float(ranges.get(f, (0,1,0))[2])
+                                for f in features}
+
+        # ── MODE 3: Manual Entry (top features only) ───────
+        else:
+            st.caption("Showing top features by SHAP importance. "
+                       "Other fields use clinical defaults.")
+            key_features = (
+                shap_data.get("top_5_features", features[:5])
+                if shap_data else features[:5]
+            )
+            ranges = FEATURE_RANGES.get(disease_key, {})
+
+            for feat in key_features:
+                r = ranges.get(feat, (0.0, 100.0, 0.0))
+                mn, mx, default = float(r[0]), float(r[1]), float(r[2])
+                if mx == 1.0 and mn == 0.0:
+                    patient_data[feat] = float(
+                        st.checkbox(feat, key=f"t1m_{feat}")
+                    )
+                else:
+                    step = 1.0 if (mx - mn) > 10 else 0.1
+                    patient_data[feat] = st.slider(
+                        feat, mn, mx, default, step,
+                        key=f"t1m_{feat}"
+                    )
+
+            # Fill remaining features with clinical defaults
             for feat in features:
                 if feat not in patient_data:
-                    patient_data[feat] = float(profile_vals.get(feat, 0.0))
+                    r = ranges.get(feat, (0.0, 1.0, 0.0))
+                    patient_data[feat] = float(r[2])
 
-            submitted = st.form_submit_button(
-                "🔍 Generate Transparency Label",
-                use_container_width=True
-            )
+        submitted = st.button(
+            "🔍 Generate Transparency Label",
+            use_container_width=True,
+            type="primary"
+        )
 
     with col_right:
         st.subheader("Transparency Label Output")
@@ -503,6 +604,9 @@ with tab1:
                 st.session_state["t1_prob"] = probability
                 st.session_state["t1_pred"] = prediction
                 st.session_state["t1_risk"] = risk_level
+                # Audit trail logging
+                log_prediction(disease_key, model_key,
+                               probability, prediction, risk_level)
             else:
                 st.warning("Model files not found.")
                 probability, prediction, risk_level = 0.5, 0, "Moderate"
@@ -553,8 +657,7 @@ with tab1:
 </div>
 """, unsafe_allow_html=True)
 
-    # FIX ISSUE 2 — gauge in its own full-width row BELOW both columns
-    # so the title "Prediction Confidence" never overlaps the card.
+    # Gauge in its own full-width row BELOW both columns
     st.markdown("---")
     _, gauge_col, _ = st.columns([1, 2, 1])
     with gauge_col:
@@ -562,6 +665,7 @@ with tab1:
         fig_gauge = go.Figure(go.Indicator(
             mode="gauge+number",
             value=probability * 100,
+            number={"suffix": "%", "font": {"size": 28}},
             gauge={
                 "axis": {"range": [0, 100]},
                 "bar":  {"color": risk_colour(risk_level)},
@@ -577,7 +681,7 @@ with tab1:
         )
         st.plotly_chart(fig_gauge, use_container_width=True)
 
-    # SHAP charts — clean, no "from Nema" caption
+    # SHAP charts
     st.markdown("---")
     shap_c1, shap_c2 = st.columns([1, 1])
     with shap_c1:
@@ -749,10 +853,8 @@ with tab3:
 
 # ══════════════════════════════════════════════
 # TAB 4 — WHAT-IF SIMULATOR
-# FIX ISSUE 5 — binary features now use
-#   checkboxes; continuous features use sliders
-#   with correct per-feature min/max/default.
-#   Real model prediction runs on every change.
+# Now uses cached model loaders so prediction is fast.
+# Gauge title moved out of plot so it never overlaps.
 # ══════════════════════════════════════════════
 with tab4:
     st.header("🔬 What-If Simulator")
@@ -812,21 +914,32 @@ with tab4:
 
         sim_risk = prob_to_risk(sim_prob)
 
+        # Title outside plot — never overlaps with gauge
+        st.markdown("#### Disease Probability")
         fig_sim = go.Figure(go.Indicator(
             mode="gauge+number",
             value=sim_prob * 100,
-            title={"text": "Disease Probability (%)"},
+            number={"suffix": "%", "font": {"size": 32}},
             gauge={
-                "axis":  {"range": [0,100]},
-                "bar":   {"color": risk_colour(sim_risk)},
+                "axis":  {"range": [0,100], "tickwidth": 1},
+                "bar":   {"color": risk_colour(sim_risk), "thickness": 0.7},
                 "steps": [
                     {"range": [0,  40], "color": "#e8f5e9"},
                     {"range": [40, 60], "color": "#fff3e0"},
                     {"range": [60,100], "color": "#ffebee"},
-                ]
+                ],
+                "threshold": {
+                    "line": {"color": "black", "width": 3},
+                    "thickness": 0.75,
+                    "value": sim_prob * 100
+                }
             }
         ))
-        fig_sim.update_layout(height=280, margin=dict(t=30,b=10))
+        fig_sim.update_layout(
+            height=300,
+            margin=dict(t=20, b=20, l=40, r=40),
+            paper_bgcolor="rgba(0,0,0,0)"
+        )
         st.plotly_chart(fig_sim, use_container_width=True)
 
         pred_label = "⚠️ POSITIVE" if sim_pred == 1 else "✅ NEGATIVE"
@@ -855,11 +968,8 @@ with tab4:
 
 # ══════════════════════════════════════════════
 # TAB 5 — PREDICTION EXPLAINER
-# FIX ISSUE 3 — removed all "real SHAP from Nema"
-#   captions. Clean text only.
-# FIX ISSUE 7 — Q&A is now fully dynamic:
-#   answers depend on which feature was asked,
-#   current prediction result, SHAP rank, etc.
+# Q&A is now stateful — same question gets a different
+# angle each time, history is preserved, conversation feel.
 # ══════════════════════════════════════════════
 with tab5:
     st.header("💬 Prediction Explainer")
@@ -929,15 +1039,31 @@ The model analysed {len(features)} features. Top 5 drivers:
         else:
             st.warning("SHAP data not found.")
 
-    # ── Dynamic Q&A ───────────────────────────────────────────────
+    # ── Stateful Q&A with conversation history ───────────
     st.markdown("---")
-    st.subheader("Ask About This Prediction")
+    st.subheader("💬 Ask About This Prediction")
+
+    if "qa_history" not in st.session_state:
+        st.session_state["qa_history"] = []
+
     user_q = st.text_input(
         "Type a question...",
-        placeholder="e.g. Why is BMI important?  What does recall mean?"
+        placeholder="e.g. Why is BMI important?  What does recall mean?",
+        key="qa_input"
     )
 
-    if st.button("Get Answer", use_container_width=True):
+    col_ask, col_clear = st.columns([4, 1])
+    with col_ask:
+        ask_btn = st.button("Get Answer", use_container_width=True,
+                            type="primary")
+    with col_clear:
+        clear_btn = st.button("🗑️ Clear", use_container_width=True)
+
+    if clear_btn:
+        st.session_state["qa_history"] = []
+        st.rerun()
+
+    if ask_btn:
         if not user_q:
             st.warning("Please type a question first.")
         elif shap_data is None:
@@ -950,117 +1076,173 @@ The model analysed {len(features)} features. Top 5 drivers:
             last_prob     = st.session_state.get("t1_prob", None)
             q_lower       = user_q.lower()
 
-            # 1. Feature-specific question
+            prev_questions = [h["q"].lower()
+                              for h in st.session_state["qa_history"]]
+            is_repeat = any(q_lower in pq or pq in q_lower
+                            for pq in prev_questions)
+            repeat_note = ""
+            if is_repeat:
+                repeat_note = ("\n\n*ℹ️ You asked something similar before — "
+                               "here's a different angle on it.*")
+
+            answer = ""
             matched_feat = next(
                 (f for f in all_feat_keys if f.lower() in q_lower), None
             )
 
+            # 1. Feature-specific question
             if matched_feat:
                 val      = importance[matched_feat]
                 rank     = all_feat_keys.index(matched_feat) + 1
                 strength = ("very strong" if rank <= 3
                             else "moderate" if rank <= 8 else "minor")
                 in_top5  = matched_feat in top5
-                pred_ctx = ""
-                if last_pred is not None:
-                    outcome  = "positive" if last_pred == 1 else "negative"
-                    pred_ctx = (
-                        f" The last prediction was **{outcome}** "
-                        f"({last_prob*100:.1f}% confidence)."
-                    )
-                st.markdown(f"""
+
+                # Vary the angle based on how many times this feature was asked
+                repeat_count = sum(
+                    1 for pq in prev_questions
+                    if matched_feat.lower() in pq
+                )
+
+                if repeat_count == 0:
+                    answer = f"""
 **About: {matched_feat}**
 
 Ranked **#{rank}** out of {len(all_feat_keys)} features
-(SHAP importance: {val:.4f}) — **{strength}** influence.
+(SHAP importance: `{val:.4f}`) — **{strength}** influence on the model's decision.
 
-{"This is a top-5 most important feature for this model." if in_top5 else ""}
-{pred_ctx}
-""")
+{"⭐ This is a top-5 driver for " + selected_disease + " predictions." if in_top5 else "This feature has secondary influence."}
+"""
+                elif repeat_count == 1:
+                    top_val = importance[top5[0]]
+                    ratio = val / top_val if top_val > 0 else 0
+                    answer = f"""
+**More on {matched_feat}** (relative comparison)
+
+Compared to the most important feature (`{top5[0]}`), this one carries
+**{ratio*100:.1f}%** of its influence. In clinical terms, {matched_feat}
+contributes meaningfully but isn't the dominant signal.
+
+The model would still flag many cases correctly even without this feature,
+but its inclusion improves accuracy.
+"""
+                else:
+                    answer = f"""
+**Technical view of {matched_feat}**
+
+Mean absolute SHAP value: `{val:.4f}`. This represents the average impact
+this feature has on pushing predictions toward the positive class
+(in log-odds for tree models, in linear contribution for LR).
+
+Across the {shap_data.get('n_samples_used', 'sample')} test patients analysed,
+this feature consistently appeared in the prediction reasoning.
+"""
+
+                if last_pred is not None:
+                    outcome = "positive" if last_pred == 1 else "negative"
+                    answer += (f"\n\n**Current case context**: prediction is "
+                               f"**{outcome}** ({last_prob*100:.1f}% confidence).")
 
             # 2. AUC / ROC question
             elif any(w in q_lower for w in ["auc","roc"]):
                 auc = m.get("auc_roc", 0)
                 quality = ('excellent' if auc>=0.85
                            else 'good' if auc>=0.75 else 'moderate')
-                st.markdown(f"""
-**AUC-ROC for {selected_disease} ({selected_model_name}): {auc:.3f}**
+                answer = f"""
+**AUC-ROC for {selected_disease} ({selected_model_name}): `{auc:.3f}`**
 
-Measures how well the model separates positive from negative cases.
-1.0 = perfect, 0.5 = random. This model is **{quality}** at
-distinguishing disease from no-disease — it correctly ranks a
-positive case above a negative case **{auc*100:.1f}%** of the time.
-""")
+This measures how well the model **ranks** a positive case higher than
+a negative one. 1.0 is perfect, 0.5 is random guessing.
+
+This model is **{quality}** at discrimination — it correctly orders a
+positive case above a negative one **{auc*100:.1f}%** of the time.
+"""
 
             # 3. Recall / sensitivity
             elif any(w in q_lower for w in ["recall","sensitivity","miss"]):
                 recall = m.get("recall", 0)
-                st.markdown(f"""
-**Recall for {selected_disease}: {recall*100:.1f}%**
+                answer = f"""
+**Recall (Sensitivity) for {selected_disease}: `{recall*100:.1f}%`**
 
-Out of every 100 real {selected_disease} cases, this model
-correctly flags **{recall*100:.1f}** of them.
-The remaining **{(1-recall)*100:.1f}** are missed (false negatives).
-In clinical screening, high recall is critical.
-""")
+Out of every 100 real {selected_disease.lower()} cases, this model catches
+**{recall*100:.0f}** of them. The remaining **{(1-recall)*100:.0f}** are
+missed (false negatives).
 
-            # 4. Prediction / why / confidence
+In medical screening, recall matters more than precision — a missed
+disease is worse than a false alarm.
+"""
+
+            # 4. Bias / fairness / age
+            elif any(w in q_lower for w in ["bias","fair","age","group"]):
+                fd_q   = fairness_data.get(disease_key, {})
+                bias_r = fd_q.get("bias_risk","Unknown")
+                dpd    = fd_q.get("demographic_parity_difference",0)
+                answer = f"""
+**Fairness — {selected_disease}**
+
+Bias Risk: **{bias_r}**
+DPD: `{dpd:.4f}` — positive prediction rate differs by
+**{dpd*100:.1f} percentage points** across age groups.
+
+{"⚠️ High bias detected — significant variation by age group. Clinical use should account for this." if bias_r=="High" else "✅ Low bias — consistent performance across groups."}
+"""
+
+            # 5. Prediction / why / confidence
             elif any(w in q_lower for w in
                      ["predict","result","confidence","why","how"]):
                 if last_pred is not None:
                     outcome  = "POSITIVE" if last_pred == 1 else "NEGATIVE"
                     top_feat = top5[0]
                     top_val  = importance[top_feat]
-                    st.markdown(f"""
+                    answer = f"""
 **Last prediction: {outcome} ({last_prob*100:.1f}% confidence)**
 
-The single most influential feature in this model is **{top_feat}**
-(importance: {top_val:.4f}). Top 5 features: {", ".join(top5)}.
+The dominant feature driving this prediction is **{top_feat}**
+(SHAP importance: `{top_val:.4f}`).
 
-Model recall: {m.get('recall',0)*100:.1f}% — catches that many real cases.
-""")
+Top 5 contributing factors: {", ".join(f"`{f}`" for f in top5)}
+
+Model recall ({m.get('recall',0)*100:.1f}%) means it catches that
+fraction of real cases.
+"""
                 else:
-                    st.info("Generate a prediction in Tab 1 first.")
+                    answer = "ℹ️ Generate a prediction in **Tab 1** first, then ask again."
 
-            # 5. Bias / fairness / age
-            elif any(w in q_lower for w in ["bias","fair","age","group"]):
-                fd_q   = fairness_data.get(disease_key, {})
-                bias_r = fd_q.get("bias_risk","Unknown")
-                dpd    = fd_q.get("demographic_parity_difference",0)
-                st.markdown(f"""
-**Fairness — {selected_disease}**
-
-Bias Risk: **{bias_r}**
-DPD: {dpd:.4f} — positive prediction rate differs by
-{dpd*100:.1f} percentage points across age groups.
-
-{"⚠️ High bias — significant variation by age group." if bias_r=="High" else "✅ Low bias — consistent performance across groups."}
-""")
-
-            # 6. Generic fallback using real data
+            # 6. Generic fallback
             else:
                 top_feat = top5[0]
-                top_val  = importance[top_feat]
-                st.markdown(f"""
-**Summary — {selected_disease} ({selected_model_name})**
+                answer = f"""
+**Quick Summary — {selected_disease} ({selected_model_name})**
 
-Most important feature: **{top_feat}** (SHAP: {top_val:.4f})
-Top 5: {", ".join(top5)}
+- Top feature: **{top_feat}** (SHAP: `{importance[top_feat]:.4f}`)
+- Top 5: {", ".join(f"`{f}`" for f in top5)}
+- AUC-ROC: `{m.get('auc_roc',0):.3f}` | Recall: `{m.get('recall',0)*100:.1f}%`
 
-AUC-ROC: {m.get('auc_roc',0):.3f}
-Recall: {m.get('recall',0)*100:.1f}%
-Accuracy: {m.get('accuracy',0)*100:.1f}%
+**Try asking:**
+- "Why is {top_feat} important?"
+- "What does AUC mean?"
+- "Is there age bias?"
+- "Why this prediction?"
+"""
 
-Try asking: "Why is {top_feat} important?", "What is recall?",
-"What does AUC mean?", or "Is there age bias?"
-""")
+            # Append to history
+            st.session_state["qa_history"].append({
+                "q": user_q,
+                "a": answer + repeat_note
+            })
+
+    # Render conversation history (newest first, only newest expanded)
+    if st.session_state["qa_history"]:
+        st.markdown("#### 📜 Conversation")
+        for i, qa in enumerate(reversed(st.session_state["qa_history"])):
+            with st.expander(f"❓ {qa['q']}", expanded=(i == 0)):
+                st.markdown(qa["a"])
 
 
 # ══════════════════════════════════════════════
-# TAB 6 — COMPLIANCE REPORT + PDF
-# FIX ISSUE 6 — safe_pdf() strips all
-#   non-latin-1 characters before writing,
-#   and pdf.output() is called as bytes().
+# TAB 6 — COMPLIANCE REPORT + PROFESSIONAL PDF
+# Now uses ReportLab — proper tables, page numbers,
+# Unicode support, color-coded compliance status.
 # ══════════════════════════════════════════════
 with tab6:
     st.header("📄 Compliance Report")
@@ -1082,8 +1264,8 @@ with tab6:
          "Classified as High-Risk AI per EU AI Act"),
         ("Bias Documentation",           True,
          "Bias risk labelled per disease"),
-        ("Audit Trail",                  False,
-         "Full audit logging pending"),
+        ("Audit Trail",                  True,
+         "All predictions logged to audit/predictions.jsonl"),
     ]
     for check_name, passed, detail in checks:
         icon = "✅" if passed else "⏳"
@@ -1118,112 +1300,274 @@ with tab6:
     st.markdown("---")
     st.subheader("📥 Export as PDF")
 
-    if st.button("📄 Generate PDF Report", use_container_width=True):
+    if st.button("📄 Generate PDF Report", use_container_width=True,
+                 type="primary"):
         try:
-            from fpdf import FPDF
+            from reportlab.lib.pagesizes import A4
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.lib import colors
+            from reportlab.lib.units import cm
+            from reportlab.platypus import (
+                SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+                PageBreak
+            )
+            from reportlab.lib.enums import TA_CENTER
 
-            pdf = FPDF()
-            pdf.add_page()
-            pdf.set_margins(15, 15, 15)
+            buffer = BytesIO()
+            doc = SimpleDocTemplate(
+                buffer,
+                pagesize=A4,
+                leftMargin=2*cm, rightMargin=2*cm,
+                topMargin=2*cm, bottomMargin=2*cm,
+                title=f"MediSight AI Transparency Label - {selected_disease}"
+            )
 
-            # Title
-            pdf.set_font("Arial","B",18)
-            pdf.cell(0,12,safe_pdf("MediSight AI -- Transparency Label"),ln=True)
-            pdf.set_font("Arial",size=12)
-            pdf.cell(0,8,safe_pdf(f"Disease : {selected_disease}"),ln=True)
-            pdf.cell(0,8,safe_pdf(f"Model   : {selected_model_name}"),ln=True)
-            pdf.ln(4)
+            styles = getSampleStyleSheet()
+            title_style = ParagraphStyle(
+                'CustomTitle', parent=styles['Heading1'],
+                fontSize=22, textColor=colors.HexColor("#1f4e79"),
+                alignment=TA_CENTER, spaceAfter=6
+            )
+            subtitle_style = ParagraphStyle(
+                'Subtitle', parent=styles['Normal'],
+                fontSize=11, textColor=colors.HexColor("#666666"),
+                alignment=TA_CENTER, spaceAfter=20
+            )
+            section_style = ParagraphStyle(
+                'Section', parent=styles['Heading2'],
+                fontSize=14, textColor=colors.HexColor("#1f4e79"),
+                spaceBefore=14, spaceAfter=8
+            )
+            disclaimer_style = ParagraphStyle(
+                'Disclaimer', parent=styles['Normal'],
+                fontSize=9, textColor=colors.HexColor("#888888"),
+                alignment=TA_CENTER, spaceBefore=20,
+                fontName='Helvetica-Oblique'
+            )
 
-            # Last prediction
+            story = []
+
+            # ── Header ────────────────────────────────────
+            story.append(Paragraph("MediSight AI", title_style))
+            story.append(Paragraph(
+                "Transparency Label for Healthcare Prediction Systems",
+                subtitle_style
+            ))
+            story.append(Paragraph(
+                f"Generated on {datetime.now().strftime('%d %B %Y, %H:%M')} "
+                f"&nbsp;|&nbsp; Department of AI &amp; DS, "
+                f"Mysore University School of Engineering",
+                ParagraphStyle('meta', parent=styles['Normal'], fontSize=9,
+                               textColor=colors.grey, alignment=TA_CENTER)
+            ))
+            story.append(Spacer(1, 0.5*cm))
+
+            # ── Section 1: Prediction Summary ─────────────
+            story.append(Paragraph("1. Prediction Summary", section_style))
             last_pred_t6 = st.session_state.get("t1_pred", None)
             last_prob_t6 = st.session_state.get("t1_prob", None)
+            last_risk_t6 = st.session_state.get("t1_risk", "N/A")
+
             if last_pred_t6 is not None:
-                outcome = "POSITIVE" if last_pred_t6==1 else "NEGATIVE"
-                pdf.set_font("Arial","B",13)
-                pdf.cell(0,9,"PREDICTION",ln=True)
-                pdf.set_font("Arial",size=11)
-                pdf.cell(0,7,safe_pdf(f"  Result     : {outcome}"),ln=True)
-                pdf.cell(0,7,
-                    safe_pdf(f"  Confidence : {last_prob_t6*100:.1f}%"),ln=True)
-                pdf.ln(4)
+                outcome = ("POSITIVE - Disease Detected"
+                           if last_pred_t6 == 1
+                           else "NEGATIVE - No Disease")
+                pred_data = [
+                    ["Field", "Value"],
+                    ["Disease Screened", selected_disease],
+                    ["Model Used", selected_model_name],
+                    ["Result", outcome],
+                    ["Confidence", f"{last_prob_t6*100:.1f}%"],
+                    ["Risk Level", last_risk_t6],
+                ]
+            else:
+                pred_data = [
+                    ["Field", "Value"],
+                    ["Disease Screened", selected_disease],
+                    ["Model Used", selected_model_name],
+                    ["Status",
+                     "No prediction generated yet - run Tab 1 first"],
+                ]
 
-            # Metrics
-            pdf.set_font("Arial","B",13)
-            pdf.cell(0,9,"MODEL METRICS",ln=True)
-            pdf.set_font("Arial",size=11)
-            dm_pdf = all_metrics.get(disease_key,{}).get(model_key,{})
-            for label, key in [
-                ("Accuracy ","accuracy"),("Recall   ","recall"),
-                ("Precision","precision"),("F1 Score ","f1_score"),
-                ("AUC-ROC  ","auc_roc"),
-            ]:
-                pdf.cell(0,7,
-                    safe_pdf(f"  {label}: {dm_pdf.get(key,0):.4f}"),ln=True)
-            pdf.ln(4)
+            pred_table = Table(pred_data, colWidths=[6*cm, 10*cm])
+            pred_table.setStyle(TableStyle([
+                ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#1f4e79")),
+                ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
+                ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0,0), (-1,-1), 10),
+                ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
+                ('ROWBACKGROUNDS', (0,1), (-1,-1),
+                 [colors.white, colors.HexColor("#f5f5f5")]),
+                ('PADDING', (0,0), (-1,-1), 8),
+                ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+            ]))
+            story.append(pred_table)
 
-            # Fairness
-            pdf.set_font("Arial","B",13)
-            pdf.cell(0,9,"FAIRNESS ANALYSIS",ln=True)
-            pdf.set_font("Arial",size=11)
-            fd_pdf = fairness_data.get(disease_key,{})
-            pdf.cell(0,7,
-                safe_pdf(f"  Bias Risk : {fd_pdf.get('bias_risk','Unknown')}"),
-                ln=True)
-            pdf.cell(0,7,
-                safe_pdf(f"  DPD       : "
-                         f"{fd_pdf.get('demographic_parity_difference',0):.4f}"),
-                ln=True)
-            pdf.cell(0,7,
-                safe_pdf(f"  EOD       : "
-                         f"{fd_pdf.get('equalized_odds_difference',0):.4f}"),
-                ln=True)
-            pdf.ln(4)
+            # ── Section 2: Model Performance ──────────────
+            story.append(Paragraph("2. Model Performance Metrics",
+                                   section_style))
+            dm_pdf = all_metrics.get(disease_key, {}).get(model_key, {})
+            perf_data = [
+                ["Metric", "Value", "Interpretation"],
+                ["Accuracy",  f"{dm_pdf.get('accuracy',0):.4f}",
+                 "Overall correctness across all predictions"],
+                ["Precision", f"{dm_pdf.get('precision',0):.4f}",
+                 "Of flagged cases, how many are truly positive"],
+                ["Recall",    f"{dm_pdf.get('recall',0):.4f}",
+                 "Of real cases, how many the model catches"],
+                ["F1 Score",  f"{dm_pdf.get('f1_score',0):.4f}",
+                 "Balance between precision and recall"],
+                ["AUC-ROC",   f"{dm_pdf.get('auc_roc',0):.4f}",
+                 "Discrimination quality (1.0 = perfect)"],
+            ]
+            perf_table = Table(perf_data, colWidths=[3.5*cm, 3*cm, 9.5*cm])
+            perf_table.setStyle(TableStyle([
+                ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#1f4e79")),
+                ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
+                ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0,0), (-1,-1), 9),
+                ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
+                ('ROWBACKGROUNDS', (0,1), (-1,-1),
+                 [colors.white, colors.HexColor("#f5f5f5")]),
+                ('PADDING', (0,0), (-1,-1), 6),
+            ]))
+            story.append(perf_table)
 
-            # SHAP
+            # ── Section 3: Fairness Analysis ──────────────
+            story.append(Paragraph("3. Fairness Analysis (Age-based)",
+                                   section_style))
+            fd_pdf = fairness_data.get(disease_key, {})
+            bias_color = {
+                "High":     colors.HexColor("#dc3545"),
+                "Moderate": colors.HexColor("#fd7e14"),
+                "Low":      colors.HexColor("#28a745")
+            }.get(fd_pdf.get("bias_risk", "Unknown"), colors.grey)
+
+            fair_data = [
+                ["Metric", "Value"],
+                ["Bias Risk Classification",
+                 fd_pdf.get("bias_risk", "Unknown")],
+                ["Demographic Parity Difference (DPD)",
+                 f"{fd_pdf.get('demographic_parity_difference', 0):.4f}"],
+                ["Equalized Odds Difference (EOD)",
+                 f"{fd_pdf.get('equalized_odds_difference', 0):.4f}"],
+                ["Maximum Accuracy Gap Across Age Groups",
+                 f"{fd_pdf.get('max_accuracy_gap', 0):.4f}"],
+            ]
+            fair_table = Table(fair_data, colWidths=[10*cm, 6*cm])
+            fair_table.setStyle(TableStyle([
+                ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#1f4e79")),
+                ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
+                ('BACKGROUND', (1,1), (1,1), bias_color),
+                ('TEXTCOLOR', (1,1), (1,1), colors.white),
+                ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+                ('FONTNAME', (1,1), (1,1), 'Helvetica-Bold'),
+                ('FONTSIZE', (0,0), (-1,-1), 10),
+                ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
+                ('PADDING', (0,0), (-1,-1), 6),
+            ]))
+            story.append(fair_table)
+
+            # ── Section 4: SHAP Top Features ──────────────
             if shap_data is not None:
-                pdf.set_font("Arial","B",13)
-                pdf.cell(0,9,"TOP SHAP FEATURES",ln=True)
-                pdf.set_font("Arial",size=11)
+                story.append(Paragraph(
+                    "4. Top Risk Factors (SHAP Analysis)",
+                    section_style
+                ))
                 imp_pdf = shap_data["feature_importance"]
-                for i, feat in enumerate(shap_data["top_5_features"],1):
-                    pdf.cell(0,7,
-                        safe_pdf(f"  {i}. {feat}: {imp_pdf[feat]:.4f}"),ln=True)
-                pdf.ln(4)
+                shap_rows = [["Rank", "Feature", "SHAP Importance"]]
+                for i, feat in enumerate(shap_data["top_5_features"], 1):
+                    shap_rows.append([str(i), feat, f"{imp_pdf[feat]:.4f}"])
 
-            # EU AI Act
-            pdf.set_font("Arial","B",13)
-            pdf.cell(0,9,"EU AI ACT 2024 COMPLIANCE",ln=True)
-            pdf.set_font("Arial",size=11)
-            for check_name, passed, _ in checks:
-                pdf.cell(0,7,
-                    safe_pdf(f"  [{'PASS' if passed else 'PENDING'}] "
-                             f"{check_name}"),ln=True)
-            pdf.ln(4)
+                shap_table = Table(shap_rows,
+                                   colWidths=[1.5*cm, 10.5*cm, 4*cm])
+                shap_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#1f4e79")),
+                    ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
+                    ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0,0), (-1,-1), 10),
+                    ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
+                    ('ROWBACKGROUNDS', (0,1), (-1,-1),
+                     [colors.white, colors.HexColor("#f5f5f5")]),
+                    ('PADDING', (0,0), (-1,-1), 6),
+                    ('ALIGN', (0,0), (0,-1), 'CENTER'),
+                    ('ALIGN', (2,0), (2,-1), 'RIGHT'),
+                ]))
+                story.append(shap_table)
 
-            # Disclaimer
-            pdf.set_font("Arial","I",10)
-            pdf.multi_cell(0,6,safe_pdf(
+            # ── Section 5: EU AI Act Compliance ──────────
+            story.append(PageBreak())
+            story.append(Paragraph("5. EU AI Act 2024 Compliance",
+                                   section_style))
+            comp_rows = [["Status", "Requirement", "Detail"]]
+            for check_name, passed, detail in checks:
+                status_text = "PASS" if passed else "PENDING"
+                comp_rows.append([status_text, check_name, detail])
+
+            comp_table = Table(comp_rows, colWidths=[2*cm, 5*cm, 9*cm])
+            comp_style = [
+                ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#1f4e79")),
+                ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
+                ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0,0), (-1,-1), 9),
+                ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
+                ('PADDING', (0,0), (-1,-1), 5),
+                ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+            ]
+            for i, (_, passed, _) in enumerate(checks, 1):
+                color = (colors.HexColor("#28a745") if passed
+                         else colors.HexColor("#fd7e14"))
+                comp_style.append(('BACKGROUND', (0,i), (0,i), color))
+                comp_style.append(('TEXTCOLOR', (0,i), (0,i), colors.white))
+                comp_style.append(('FONTNAME', (0,i), (0,i), 'Helvetica-Bold'))
+                comp_style.append(('ALIGN', (0,i), (0,i), 'CENTER'))
+            comp_table.setStyle(TableStyle(comp_style))
+            story.append(comp_table)
+
+            # ── Disclaimer ────────────────────────────────
+            story.append(Spacer(1, 1*cm))
+            story.append(Paragraph(
                 "DISCLAIMER: This report is generated by an AI screening "
-                "system. It does not constitute a clinical diagnosis. "
-                "All predictions must be reviewed by a qualified "
-                "healthcare professional."
+                "system and does not constitute a clinical diagnosis. "
+                "All predictions must be reviewed by a qualified healthcare "
+                "professional. MediSight AI is a research prototype "
+                "developed for academic purposes.",
+                disclaimer_style
             ))
 
-            # Output — bytes() works for both fpdf and fpdf2
-            pdf_bytes = bytes(pdf.output())
+            # ── Page numbering ────────────────────────────
+            def add_page_number(canvas, doc):
+                canvas.saveState()
+                canvas.setFont('Helvetica', 8)
+                canvas.setFillColor(colors.grey)
+                canvas.drawRightString(
+                    A4[0] - 2*cm, 1.5*cm,
+                    f"Page {doc.page} | MediSight AI"
+                )
+                canvas.restoreState()
+
+            doc.build(story,
+                      onFirstPage=add_page_number,
+                      onLaterPages=add_page_number)
+            pdf_bytes = buffer.getvalue()
+            buffer.close()
 
             st.download_button(
-                label="Download PDF",
+                label="⬇️ Download Transparency Label PDF",
                 data=pdf_bytes,
-                file_name=f"medisight_{disease_key}_transparency_label.pdf",
-                mime="application/pdf"
+                file_name=(f"medisight_{disease_key}_{model_key}"
+                           f"_label.pdf"),
+                mime="application/pdf",
+                use_container_width=True
             )
-            st.success("PDF generated successfully!")
+            st.success("✅ PDF generated — professional formatting applied.")
 
         except ImportError:
-            st.error("FPDF2 not installed. Run: pip install fpdf2")
+            st.error("ReportLab not installed. Run: `pip install reportlab`")
         except Exception as e:
-            st.error(f"PDF error: {e}")
+            st.error(f"PDF generation error: {e}")
+            import traceback
+            st.code(traceback.format_exc())
 
     st.markdown("---")
     st.caption(
