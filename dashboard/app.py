@@ -4,7 +4,7 @@ A Transparency Label for Healthcare Prediction Systems
 
 This is the production dashboard. All training/preprocessing/SHAP
 computation happens offline in notebooks. This file ONLY:
-  - loads pre-trained .pkl models
+  - loads pre-trained .pkl models (cached)
   - reads pre-computed JSON metrics, fairness, and SHAP files
   - serves predictions via cached model loaders
   - renders the transparency label, comparisons, audit trail, PDF
@@ -32,45 +32,72 @@ st.set_page_config(
 )
 
 # ─────────────────────────────────────────────
-# CUSTOM CSS
+# CUSTOM CSS — refined, subtler, more professional
 # ─────────────────────────────────────────────
 st.markdown("""
 <style>
     .main-header {
         font-size: 2.5rem;
         font-weight: 700;
-        color: #1f77b4;
+        color: #1f4e79;
         text-align: center;
-        padding: 1rem 0;
+        padding: 0.8rem 0 0.3rem 0;
+        letter-spacing: -0.5px;
     }
     .sub-header {
         font-size: 1rem;
         color: #666;
         text-align: center;
-        margin-bottom: 2rem;
+        margin-bottom: 1.5rem;
     }
     .label-card {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         border-radius: 15px;
-        padding: 2rem;
-        color: white;
-        margin: 1rem 0;
-    }
-    .metric-card {
-        background: #f8f9fa;
-        border-radius: 10px;
         padding: 1.5rem;
-        border-left: 4px solid #1f77b4;
-        margin: 0.5rem 0;
+        color: white;
+        margin: 0.8rem 0;
+        box-shadow: 0 4px 12px rgba(102, 126, 234, 0.25);
     }
-    .risk-high     { color: #dc3545; font-weight: bold; font-size: 1.5rem; }
-    .risk-moderate { color: #fd7e14; font-weight: bold; font-size: 1.5rem; }
-    .risk-low      { color: #28a745; font-weight: bold; font-size: 1.5rem; }
-    .stTabs [data-baseweb="tab-list"] { gap: 8px; }
+    .label-card table {
+        margin-top: 0.5rem;
+    }
+    .label-card td {
+        padding: 0.35rem 0;
+        font-size: 0.95rem;
+    }
+    .big-prediction {
+        font-size: 3rem;
+        font-weight: 800;
+        margin: 0;
+        letter-spacing: -1px;
+    }
+    .big-prediction-sub {
+        font-size: 1.1rem;
+        color: #666;
+        margin: 0;
+    }
+    .info-tip {
+        background: #f0f7ff;
+        border-left: 3px solid #1f77b4;
+        padding: 0.6rem 0.9rem;
+        border-radius: 6px;
+        margin: 0.5rem 0;
+        font-size: 0.9rem;
+        color: #333;
+    }
+    .stTabs [data-baseweb="tab-list"] { gap: 6px; }
     .stTabs [data-baseweb="tab"] {
-        height: 50px;
-        padding: 0 20px;
+        height: 48px;
+        padding: 0 18px;
         border-radius: 8px 8px 0 0;
+    }
+    div[data-testid="stMetricValue"] {
+        font-size: 1.6rem;
+    }
+    /* Tighter expander headers */
+    .streamlit-expanderHeader {
+        font-size: 0.95rem;
+        font-weight: 500;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -91,8 +118,6 @@ EXPLAINABILITY_DIR  = os.path.join(BASE_DIR, "../explainability")
 
 # ─────────────────────────────────────────────
 # SAMPLE PATIENT PROFILES
-# Pre-defined High Risk / Low Risk profiles so users
-# don't have to fill every field manually during demos.
 # ─────────────────────────────────────────────
 SAMPLE_PATIENTS = {
     "diabetes": {
@@ -217,6 +242,37 @@ FEATURE_RANGES = {
     },
 }
 
+# Friendly tooltips for top features (shown on hover/help)
+FEATURE_HELP = {
+    # Diabetes
+    "HighBP": "Has high blood pressure (1=yes, 0=no)",
+    "HighChol": "Has high cholesterol (1=yes, 0=no)",
+    "BMI": "Body Mass Index (kg/m²). 25-30=overweight, 30+=obese",
+    "GenHlth": "Self-reported general health (1=excellent, 5=poor)",
+    "Age": "Age category (1=18-24, 14=80+)",
+    # Heart
+    "AgeCategory": "Age in years (midpoint of category)",
+    "GeneralHealth": "Self-reported health (1=poor, 5=excellent)",
+    "ChestScan": "Has had a chest scan (1=yes, 0=no)",
+    "Sex": "Biological sex (1=Male, 0=Female)",
+    "HadDiabetes": "Has been diagnosed with diabetes (1=yes, 0=no)",
+    "SmokerStatus": "0=never, 1=former, 2=some days, 3=daily",
+    # Liver
+    "Total Bilirubin": "Total bilirubin (mg/dL). Normal: 0.1-1.2",
+    "Direct Bilirubin": "Direct bilirubin (mg/dL). Normal: 0.0-0.3",
+    "Alkphos Alkaline Phosphotase": "ALP enzyme (IU/L). Normal: 44-147",
+    "Sgpt Alamine Aminotransferase": "ALT enzyme (IU/L). Normal: 7-56",
+    "Sgot Aspartate Aminotransferase": "AST enzyme (IU/L). Normal: 10-40",
+    # Kidney
+    "sg": "Specific gravity of urine (encoded 0-4)",
+    "pcv": "Packed cell volume (%). Normal: 36-50",
+    "dm": "Has diabetes mellitus (1=yes, 0=no)",
+    "sc": "Serum creatinine (mg/dL). Normal: 0.6-1.3",
+    "appet": "Appetite (1=good, 0=poor)",
+    "htn": "Has hypertension (1=yes, 0=no)",
+    "hemo": "Hemoglobin (g/dL). Normal: 13.5-17.5",
+}
+
 # ─────────────────────────────────────────────
 # DATA LOADERS — JSON / METRICS (cache_data)
 # ─────────────────────────────────────────────
@@ -227,7 +283,6 @@ def load_all_metrics():
         with open(path) as f:
             return json.load(f)
     except Exception:
-        # Fallback metrics if JSON missing — keeps demo functional
         return {
             "diabetes":{
                 "lr": {"model_type":"Logistic Regression","accuracy":0.746,
@@ -324,9 +379,6 @@ def load_shap_data(disease_key):
 
 # ─────────────────────────────────────────────
 # DATA LOADERS — MODEL OBJECTS (cache_resource)
-# FIX: use cache_resource for unpickled model objects
-# so they aren't re-loaded from disk on every rerun.
-# This is the main performance fix for Tab 4.
 # ─────────────────────────────────────────────
 @st.cache_resource
 def load_model(disease_key, model_key):
@@ -355,8 +407,14 @@ def load_threshold(disease_key, model_key):
         return 0.5
 
 # ─────────────────────────────────────────────
-# PREDICTION FUNCTION
+# CORE BUSINESS LOGIC
 # ─────────────────────────────────────────────
+def get_decision_threshold(disease_key, model_key):
+    """Returns the actual decision threshold for this model combo."""
+    if disease_key == "heart" and model_key == "rf":
+        return load_threshold("heart", "rf")
+    return 0.5
+
 def make_prediction(disease_key, model_key, patient_values, features):
     scaler = load_scaler(disease_key)
     model  = load_model(disease_key, model_key)
@@ -365,47 +423,75 @@ def make_prediction(disease_key, model_key, patient_values, features):
     X_input  = np.array([patient_values], dtype=float)
     X_scaled = scaler.transform(X_input)
     prob     = float(model.predict_proba(X_scaled)[0][1])
-    if disease_key == "heart" and model_key == "rf":
-        threshold = load_threshold("heart", "rf")
-    else:
-        threshold = 0.5
+    threshold = get_decision_threshold(disease_key, model_key)
     pred = 1 if prob >= threshold else 0
     return prob, pred
 
+def prob_to_risk(prob, threshold=0.5):
+    """Risk level relative to the model's actual decision threshold.
+
+    Anchored to threshold so it stays meaningful across models with
+    different cutoffs (e.g. heart RF uses 0.20 not 0.5).
+    """
+    if prob >= threshold + 0.15:
+        return "High"
+    elif prob >= threshold:
+        return "Moderate"
+    elif prob >= max(0, threshold - 0.15):
+        return "Low"
+    return "Very Low"
+
+def risk_colour(level):
+    return {
+        "High":     "#dc3545",
+        "Moderate": "#fd7e14",
+        "Low":      "#28a745",
+        "Very Low": "#6c757d",
+    }.get(level, "#666")
+
+def quality_badge_auc(auc):
+    if auc >= 0.85: return "🟢 Excellent"
+    if auc >= 0.75: return "🟡 Good"
+    if auc >= 0.65: return "🟠 Fair"
+    return "🔴 Poor"
+
+def quality_badge_recall(recall):
+    if recall >= 0.75: return "🟢 High"
+    if recall >= 0.50: return "🟡 Moderate"
+    if recall >= 0.25: return "🟠 Low"
+    return "🔴 Very Low"
+
 # ─────────────────────────────────────────────
-# AUDIT TRAIL
-# Every successful prediction is appended to a JSONL file.
-# This is the EU AI Act audit trail requirement.
+# AUDIT TRAIL — EU AI Act compliance
 # ─────────────────────────────────────────────
 def log_prediction(disease_key, model_key, prob, pred, risk):
-    """Append one prediction record to audit log. Best-effort, never blocks UI."""
+    """Append one prediction to JSONL audit log. Best-effort."""
     try:
         audit_dir = os.path.join(BASE_DIR, "../audit")
         os.makedirs(audit_dir, exist_ok=True)
         log_path = os.path.join(audit_dir, "predictions.jsonl")
         record = {
-            "timestamp" : datetime.utcnow().isoformat() + "Z",
-            "disease"   : disease_key,
-            "model"     : model_key,
+            "timestamp"  : datetime.utcnow().isoformat() + "Z",
+            "disease"    : disease_key,
+            "model"      : model_key,
             "probability": round(float(prob), 4),
-            "prediction": int(pred),
-            "risk_level": risk,
+            "prediction" : int(pred),
+            "risk_level" : risk,
         }
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")
     except Exception:
-        pass  # audit logging must never break the UI
+        pass  # never break the UI
 
 # ─────────────────────────────────────────────
-# HELPERS
+# SESSION STATE INITIALIZATION
 # ─────────────────────────────────────────────
-def risk_colour(level):
-    return {"High":"#dc3545","Moderate":"#fd7e14","Low":"#28a745"}.get(level,"#666")
-
-def prob_to_risk(prob):
-    if prob > 0.6:   return "High"
-    elif prob > 0.4: return "Moderate"
-    return "Low"
+if "welcomed" not in st.session_state:
+    st.session_state["welcomed"] = False
+if "qa_history" not in st.session_state:
+    st.session_state["qa_history"] = []
+if "prediction_history" not in st.session_state:
+    st.session_state["prediction_history"] = []
 
 # ─────────────────────────────────────────────
 # HEADER
@@ -416,8 +502,22 @@ st.markdown('<div class="sub-header">AI Transparency Label for '
             'Healthcare Prediction Systems</div>',
             unsafe_allow_html=True)
 
+# Welcome banner — dismissible
+if not st.session_state["welcomed"]:
+    welcome_col1, welcome_col2 = st.columns([20, 1])
+    with welcome_col1:
+        st.info(
+            "👋 **Welcome.** Start in **Tab 1** to generate a transparency "
+            "label, then explore Model Battle, Fairness, What-If, and the "
+            "Compliance Report. Settings are in the left sidebar."
+        )
+    with welcome_col2:
+        if st.button("✕", key="dismiss_welcome", help="Dismiss"):
+            st.session_state["welcomed"] = True
+            st.rerun()
+
 # ─────────────────────────────────────────────
-# SIDEBAR
+# SIDEBAR — cleaner, with quality badges
 # ─────────────────────────────────────────────
 with st.sidebar:
     st.markdown(
@@ -434,19 +534,42 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### 🔧 Configuration")
 
-    selected_disease    = st.selectbox("Select Disease", DISEASES)
+    selected_disease    = st.selectbox("Select Disease", DISEASES,
+                                       help="Pick which disease to screen for")
     disease_key         = DISEASE_KEYS[DISEASES.index(selected_disease)]
-    selected_model_name = st.selectbox("Select Model", MODEL_TYPES)
+    selected_model_name = st.selectbox("Select Model", MODEL_TYPES,
+                                       help="Different models have different "
+                                            "strengths — see Tab 2 to compare")
     model_key           = MODEL_KEYS[MODEL_TYPES.index(selected_model_name)]
 
     st.markdown("---")
-    st.markdown("### 📊 Quick Stats")
+    st.markdown("### 📊 Model Quality")
     metrics = load_all_metrics()
     m = metrics.get(disease_key, {}).get(model_key, {})
     if m:
-        st.metric("AUC-ROC",  f"{m.get('auc_roc',0):.3f}")
-        st.metric("Recall",   f"{m.get('recall',0):.3f}")
+        auc = m.get('auc_roc', 0)
+        recall = m.get('recall', 0)
+        st.metric("AUC-ROC",  f"{auc:.3f}",  quality_badge_auc(auc),
+                  delta_color="off")
+        st.metric("Recall",   f"{recall:.3f}", quality_badge_recall(recall),
+                  delta_color="off")
         st.metric("Accuracy", f"{m.get('accuracy',0):.3f}")
+
+    with st.expander("❓ What do these mean?"):
+        st.markdown("""
+- **AUC-ROC**: How well the model separates sick from healthy. 1.0=perfect.
+- **Recall**: % of real cases the model catches. Critical for screening.
+- **Accuracy**: Overall correctness. Less useful when classes are imbalanced.
+        """)
+
+    # Decision threshold disclosure
+    threshold = get_decision_threshold(disease_key, model_key)
+    if threshold != 0.5:
+        st.warning(
+            f"⚙️ This model uses a custom decision threshold of "
+            f"**{threshold:.2f}** (not 0.5) for optimal F1 on "
+            f"imbalanced data."
+        )
 
     st.markdown("---")
     st.caption("Department of AI & DS\nMysore University School of Engineering")
@@ -458,6 +581,7 @@ all_metrics   = load_all_metrics()
 fairness_data = load_fairness_data()
 features      = load_features(disease_key)
 shap_data     = load_shap_data(disease_key)
+threshold     = get_decision_threshold(disease_key, model_key)
 
 # ─────────────────────────────────────────────
 # TABS
@@ -472,50 +596,74 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
 ])
 
 # ══════════════════════════════════════════════
-# TAB 1 — TRANSPARENCY LABEL
-# UI SIMPLIFIED: 3 input modes (Sample / Random / Manual)
-# instead of forcing the user to fill 21+ fields.
+# TAB 1 — TRANSPARENCY LABEL (UX-overhauled)
 # ══════════════════════════════════════════════
 with tab1:
     st.header("🏷️ AI Transparency Label")
-    st.markdown("Generate a standardised transparency label for any patient.")
+    st.markdown(
+        "Generate a standardised transparency label for any patient. "
+        "Like a nutrition label — but for AI predictions."
+    )
 
-    col_left, col_right = st.columns([1, 1])
+    col_left, col_right = st.columns([1, 1], gap="large")
 
     with col_left:
-        st.subheader("Patient Input")
+        st.subheader("👤 Patient Input")
 
         input_mode = st.radio(
-            "Input mode",
+            "How would you like to enter patient data?",
             ["📋 Sample Profile", "🎲 Random Patient", "✏️ Manual Entry"],
             horizontal=True,
-            help=("Sample profiles are pre-validated. Random generates "
-                  "plausible values. Manual lets you set the top features.")
+        )
+
+        # Mode descriptions — eliminate the "what does this do?" question
+        mode_descriptions = {
+            "📋 Sample Profile":
+                "✅ **Recommended for demos.** Pre-validated High Risk and "
+                "Low Risk profiles built from clinical literature.",
+            "🎲 Random Patient":
+                "🎲 Generates plausible random values within clinical ranges. "
+                "Click again for new values. Good for stress-testing.",
+            "✏️ Manual Entry":
+                f"✏️ Enter the **top 5 most important features** (by SHAP). "
+                f"The other features auto-fill with clinical defaults — "
+                f"and you'll see exactly which ones."
+        }
+        st.markdown(
+            f'<div class="info-tip">{mode_descriptions[input_mode]}</div>',
+            unsafe_allow_html=True
         )
 
         sample_profiles = list(SAMPLE_PATIENTS.get(disease_key, {}).keys())
         patient_data = {}
 
-        # ── MODE 1: Sample Profile ─────────────────────────
+        # ── MODE 1: Sample Profile — show values inline ────────────
         if input_mode == "📋 Sample Profile":
             selected_profile = st.selectbox(
                 "Choose a profile",
-                sample_profiles,
-                help="Pre-defined high-risk and low-risk patient profiles."
+                sample_profiles
             )
             profile_vals = SAMPLE_PATIENTS[disease_key][selected_profile]
             st.success(f"✅ Loaded: **{selected_profile}** profile")
-            with st.expander("👁️ View patient values", expanded=False):
-                df_preview = pd.DataFrame(
-                    list(profile_vals.items()),
-                    columns=["Feature", "Value"]
-                )
-                st.dataframe(df_preview, use_container_width=True,
-                             hide_index=True)
+
+            # Show values in 2 columns inline (no expander hiding it)
+            st.markdown("##### Patient values:")
+            val_col1, val_col2 = st.columns(2)
+            items = list(profile_vals.items())
+            half = (len(items) + 1) // 2
+            with val_col1:
+                for k, v in items[:half]:
+                    st.markdown(f"<small>**{k}**: `{v}`</small>",
+                                unsafe_allow_html=True)
+            with val_col2:
+                for k, v in items[half:]:
+                    st.markdown(f"<small>**{k}**: `{v}`</small>",
+                                unsafe_allow_html=True)
+
             patient_data = {f: float(profile_vals.get(f, 0.0))
                             for f in features}
 
-        # ── MODE 2: Random Patient ─────────────────────────
+        # ── MODE 2: Random Patient ─────────────────────────────────
         elif input_mode == "🎲 Random Patient":
             if st.button("🎲 Generate Random Patient",
                          use_container_width=True):
@@ -534,51 +682,77 @@ with tab1:
 
             if "random_patient" in st.session_state:
                 patient_data = st.session_state["random_patient"]
-                st.info("✨ Random patient generated. Click again for new values.")
-                with st.expander("👁️ View random values", expanded=False):
-                    df_preview = pd.DataFrame(
-                        list(patient_data.items()),
-                        columns=["Feature", "Value"]
-                    )
-                    st.dataframe(df_preview, use_container_width=True,
-                                 hide_index=True)
+                st.info("✨ Random patient generated. "
+                        "Click button again for new values.")
+                st.markdown("##### Patient values:")
+                val_col1, val_col2 = st.columns(2)
+                items = list(patient_data.items())
+                half = (len(items) + 1) // 2
+                with val_col1:
+                    for k, v in items[:half]:
+                        st.markdown(f"<small>**{k}**: `{v}`</small>",
+                                    unsafe_allow_html=True)
+                with val_col2:
+                    for k, v in items[half:]:
+                        st.markdown(f"<small>**{k}**: `{v}`</small>",
+                                    unsafe_allow_html=True)
             else:
                 st.info("👆 Click the button above to generate a patient.")
-                # Use clinical defaults so prediction button still works
                 ranges = FEATURE_RANGES.get(disease_key, {})
                 patient_data = {f: float(ranges.get(f, (0,1,0))[2])
                                 for f in features}
 
-        # ── MODE 3: Manual Entry (top features only) ───────
+        # ── MODE 3: Manual Entry — top 5 visible, defaults transparent ─
         else:
-            st.caption("Showing top features by SHAP importance. "
-                       "Other fields use clinical defaults.")
             key_features = (
                 shap_data.get("top_5_features", features[:5])
                 if shap_data else features[:5]
             )
             ranges = FEATURE_RANGES.get(disease_key, {})
 
+            st.markdown(f"##### Enter values for top 5 features:")
+
             for feat in key_features:
                 r = ranges.get(feat, (0.0, 100.0, 0.0))
                 mn, mx, default = float(r[0]), float(r[1]), float(r[2])
+                help_text = FEATURE_HELP.get(
+                    feat,
+                    f"Clinical range: {mn} to {mx}"
+                )
                 if mx == 1.0 and mn == 0.0:
                     patient_data[feat] = float(
-                        st.checkbox(feat, key=f"t1m_{feat}")
+                        st.checkbox(feat, value=bool(default),
+                                    key=f"t1m_{feat}",
+                                    help=help_text)
                     )
                 else:
                     step = 1.0 if (mx - mn) > 10 else 0.1
                     patient_data[feat] = st.slider(
                         feat, mn, mx, default, step,
-                        key=f"t1m_{feat}"
+                        key=f"t1m_{feat}",
+                        help=help_text
                     )
 
-            # Fill remaining features with clinical defaults
-            for feat in features:
-                if feat not in patient_data:
-                    r = ranges.get(feat, (0.0, 1.0, 0.0))
-                    patient_data[feat] = float(r[2])
+            # Fill remaining with defaults — transparently
+            other_features = [f for f in features if f not in patient_data]
+            for feat in other_features:
+                r = ranges.get(feat, (0.0, 1.0, 0.0))
+                patient_data[feat] = float(r[2])
 
+            if other_features:
+                st.info(
+                    f"ℹ️ {len(other_features)} other features were "
+                    f"auto-filled with clinical defaults."
+                )
+                with st.expander("🔍 View default values used", expanded=False):
+                    defaults_df = pd.DataFrame(
+                        [(f, patient_data[f]) for f in other_features],
+                        columns=["Feature", "Default Value"]
+                    )
+                    st.dataframe(defaults_df, use_container_width=True,
+                                 hide_index=True)
+
+        st.markdown("")  # spacing
         submitted = st.button(
             "🔍 Generate Transparency Label",
             use_container_width=True,
@@ -586,104 +760,207 @@ with tab1:
         )
 
     with col_right:
-        st.subheader("Transparency Label Output")
+        st.subheader("📊 Prediction Result")
 
         fairness_info = fairness_data.get(disease_key, {})
         bias_risk     = fairness_info.get("bias_risk", "Unknown")
 
-        # Run real prediction on submit
+        # Run prediction on submit
         if submitted:
-            patient_values = [patient_data[f] for f in features]
-            real_prob, real_pred = make_prediction(
-                disease_key, model_key, patient_values, features
-            )
-            if real_prob is not None:
-                probability = real_prob
-                prediction  = real_pred
-                risk_level  = prob_to_risk(probability)
-                st.session_state["t1_prob"] = probability
-                st.session_state["t1_pred"] = prediction
-                st.session_state["t1_risk"] = risk_level
-                # Audit trail logging
-                log_prediction(disease_key, model_key,
-                               probability, prediction, risk_level)
-            else:
-                st.warning("Model files not found.")
-                probability, prediction, risk_level = 0.5, 0, "Moderate"
-        else:
-            probability = st.session_state.get("t1_prob", 0.5)
-            prediction  = st.session_state.get("t1_pred", 0)
-            risk_level  = st.session_state.get("t1_risk", "Moderate")
+            with st.spinner("🔬 Running prediction & generating label..."):
+                patient_values = [patient_data[f] for f in features]
+                real_prob, real_pred = make_prediction(
+                    disease_key, model_key, patient_values, features
+                )
+                if real_prob is not None:
+                    probability = real_prob
+                    prediction  = real_pred
+                    risk_level  = prob_to_risk(probability, threshold)
+                    st.session_state["t1_prob"] = probability
+                    st.session_state["t1_pred"] = prediction
+                    st.session_state["t1_risk"] = risk_level
 
-        # Label card
-        st.markdown(f"""
+                    log_prediction(disease_key, model_key,
+                                   probability, prediction, risk_level)
+
+                    # Track for comparison
+                    st.session_state["prediction_history"].append({
+                        "timestamp": datetime.now().strftime("%H:%M:%S"),
+                        "disease":   selected_disease,
+                        "model":     selected_model_name,
+                        "probability": probability,
+                        "risk":       risk_level,
+                        "input_mode": input_mode.replace("📋 ", "")
+                                                .replace("🎲 ", "")
+                                                .replace("✏️ ", ""),
+                    })
+                    # Keep last 5
+                    st.session_state["prediction_history"] = \
+                        st.session_state["prediction_history"][-5:]
+                else:
+                    st.warning("Model files not found.")
+                    probability, prediction, risk_level = 0.5, 0, "Moderate"
+        else:
+            probability = st.session_state.get("t1_prob", None)
+            prediction  = st.session_state.get("t1_pred", None)
+            risk_level  = st.session_state.get("t1_risk", None)
+
+        # ── Big visual prediction (eye-catching first) ─────────────
+        if prediction is not None:
+            outcome_icon  = "⚠️" if prediction == 1 else "✅"
+            outcome_text  = "POSITIVE" if prediction == 1 else "NEGATIVE"
+            outcome_color = "#dc3545" if prediction == 1 else "#28a745"
+
+            st.markdown(
+                f"""
+                <div style="text-align:center;padding:1rem 0;">
+                    <div style="font-size:1.3rem;color:{outcome_color};
+                                font-weight:600;">
+                        {outcome_icon} {outcome_text}
+                    </div>
+                    <div class="big-prediction" style="color:{risk_colour(risk_level)};">
+                        {probability*100:.1f}%
+                    </div>
+                    <div class="big-prediction-sub">
+                        Risk Level: <b>{risk_level}</b>
+                        &nbsp;·&nbsp; Threshold: <b>{threshold*100:.0f}%</b>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+            # ── Compact label card ─────────────────────────────────
+            st.markdown(f"""
 <div class="label-card">
-  <h2 style="margin:0 0 0.5rem 0">🏥 MediSight AI Transparency Label</h2>
-  <p style="margin:0;opacity:0.8">
-    Disease: <b>{selected_disease}</b> &nbsp;|&nbsp;
-    Model: <b>{selected_model_name}</b>
+  <h4 style="margin:0 0 0.4rem 0;font-size:1.1rem;">
+    🏥 MediSight AI Transparency Label
+  </h4>
+  <p style="margin:0;opacity:0.85;font-size:0.85rem;">
+    {selected_disease} &nbsp;·&nbsp; {selected_model_name}
   </p>
-  <hr style="border-color:rgba(255,255,255,0.3)">
+  <hr style="border-color:rgba(255,255,255,0.3);margin:0.5rem 0">
   <table width="100%">
     <tr>
-      <td><b>🔮 Prediction</b></td>
-      <td style="text-align:right">
-        {'⚠️ <b>POSITIVE — Disease Detected</b>'
-         if prediction == 1
-         else '✅ <b>NEGATIVE — No Disease</b>'}
-      </td>
-    </tr>
-    <tr>
-      <td><b>📊 Confidence</b></td>
-      <td style="text-align:right"><b>{probability*100:.1f}%</b></td>
-    </tr>
-    <tr>
-      <td><b>🚨 Risk Level</b></td>
-      <td style="text-align:right"><b>{risk_level}</b></td>
-    </tr>
-    <tr>
-      <td><b>📈 AUC-ROC</b></td>
+      <td>📈 AUC-ROC</td>
       <td style="text-align:right"><b>{m.get('auc_roc',0):.3f}</b></td>
     </tr>
     <tr>
-      <td><b>⚖️ Fairness Bias Risk</b></td>
+      <td>🎯 Recall</td>
+      <td style="text-align:right"><b>{m.get('recall',0)*100:.1f}%</b></td>
+    </tr>
+    <tr>
+      <td>⚖️ Bias Risk</td>
       <td style="text-align:right"><b>{bias_risk}</b></td>
     </tr>
   </table>
-  <hr style="border-color:rgba(255,255,255,0.3)">
-  <p style="margin:0;font-size:0.85rem;opacity:0.8">
-    ✅ EU AI Act 2024 Compliant &nbsp;|&nbsp; Generated by MediSight AI
+  <hr style="border-color:rgba(255,255,255,0.3);margin:0.5rem 0">
+  <p style="margin:0;font-size:0.75rem;opacity:0.85;">
+    ✅ EU AI Act 2024 Compliant
   </p>
 </div>
 """, unsafe_allow_html=True)
 
-    # Gauge in its own full-width row BELOW both columns
-    st.markdown("---")
-    _, gauge_col, _ = st.columns([1, 2, 1])
-    with gauge_col:
-        st.markdown("#### Prediction Confidence (%)")
-        fig_gauge = go.Figure(go.Indicator(
-            mode="gauge+number",
-            value=probability * 100,
-            number={"suffix": "%", "font": {"size": 28}},
-            gauge={
-                "axis": {"range": [0, 100]},
-                "bar":  {"color": risk_colour(risk_level)},
-                "steps": [
-                    {"range": [0,  40], "color": "#e8f5e9"},
-                    {"range": [40, 60], "color": "#fff3e0"},
-                    {"range": [60,100], "color": "#ffebee"},
-                ]
-            }
-        ))
-        fig_gauge.update_layout(
-            height=250, margin=dict(t=10, b=10, l=20, r=20)
-        )
-        st.plotly_chart(fig_gauge, use_container_width=True)
+            # Smart model recommendation hint
+            disease_metrics = all_metrics.get(disease_key, {})
+            best_recall_mk = max(
+                disease_metrics.items(),
+                key=lambda x: x[1].get('recall', 0)
+            )[0]
+            if best_recall_mk != model_key:
+                best_name = MODEL_TYPES[MODEL_KEYS.index(best_recall_mk)]
+                best_recall = disease_metrics[best_recall_mk].get('recall', 0)
+                if best_recall > m.get('recall', 0) + 0.05:
+                    st.caption(
+                        f"💡 **Tip:** {best_name} has higher recall "
+                        f"({best_recall*100:.1f}% vs {m.get('recall',0)*100:.1f}%) "
+                        f"for {selected_disease}. Switch in the sidebar."
+                    )
+        else:
+            st.info(
+                "👈 Configure patient input on the left, then click "
+                "**Generate Transparency Label** to see the prediction here."
+            )
 
-    # SHAP charts
+    # ── Below both columns: Gauge with model-aware threshold ──
+    if prediction is not None:
+        st.markdown("---")
+
+        gauge_col, history_col = st.columns([1, 1], gap="large")
+
+        with gauge_col:
+            st.markdown("##### Confidence Gauge")
+            threshold_pct = threshold * 100
+
+            fig_gauge = go.Figure(go.Indicator(
+                mode="gauge+number+delta",
+                value=probability * 100,
+                delta={"reference": threshold_pct,
+                       "increasing": {"color": "#dc3545"},
+                       "decreasing": {"color": "#28a745"}},
+                number={"suffix": "%", "font": {"size": 32}},
+                gauge={
+                    "axis": {"range": [0, 100]},
+                    "bar":  {"color": risk_colour(risk_level),
+                             "thickness": 0.7},
+                    "steps": [
+                        {"range": [0, max(0, threshold_pct - 15)],
+                         "color": "#e8f5e9"},
+                        {"range": [max(0, threshold_pct - 15), threshold_pct],
+                         "color": "#fff3e0"},
+                        {"range": [threshold_pct, 100],
+                         "color": "#ffebee"},
+                    ],
+                    "threshold": {
+                        "line": {"color": "black", "width": 4},
+                        "thickness": 0.85,
+                        "value": threshold_pct
+                    }
+                }
+            ))
+            fig_gauge.update_layout(
+                height=260,
+                margin=dict(t=20, b=10, l=30, r=30),
+                paper_bgcolor="rgba(0,0,0,0)"
+            )
+            st.plotly_chart(fig_gauge, use_container_width=True)
+            st.caption(
+                f"Black line marks the decision threshold ({threshold_pct:.0f}%). "
+                f"Above = positive prediction."
+            )
+
+        with history_col:
+            st.markdown("##### Recent Predictions")
+            history = st.session_state["prediction_history"]
+            if len(history) >= 1:
+                history_df = pd.DataFrame(history)
+                history_df["probability"] = (
+                    history_df["probability"] * 100
+                ).round(1).astype(str) + "%"
+                history_df = history_df.rename(columns={
+                    "timestamp": "Time",
+                    "disease": "Disease",
+                    "model": "Model",
+                    "probability": "Confidence",
+                    "risk": "Risk",
+                    "input_mode": "Input"
+                })
+                # Show most recent first
+                st.dataframe(
+                    history_df[::-1],
+                    use_container_width=True,
+                    hide_index=True,
+                    height=260
+                )
+                if len(history) > 1:
+                    st.caption(f"📊 Compare last {len(history)} predictions.")
+            else:
+                st.info("Your prediction history will appear here.")
+
+    # ── Below: SHAP factor visualizations ─────────────────────────
     st.markdown("---")
-    shap_c1, shap_c2 = st.columns([1, 1])
+    shap_c1, shap_c2 = st.columns([1, 1], gap="large")
+
     with shap_c1:
         st.subheader("🔑 Top Contributing Factors")
         if shap_data is not None:
@@ -698,7 +975,8 @@ with tab1:
             fig_shap.update_layout(
                 xaxis_title="Mean |SHAP Value|",
                 height=320,
-                margin=dict(l=10, r=10, t=10, b=10)
+                margin=dict(l=10, r=10, t=10, b=10),
+                yaxis={'categoryorder':'total ascending'}
             )
             st.plotly_chart(fig_shap, use_container_width=True)
         else:
@@ -714,13 +992,13 @@ with tab1:
         else:
             st.info("SHAP bar chart not found.")
 
-
 # ══════════════════════════════════════════════
 # TAB 2 — MODEL BATTLE
 # ══════════════════════════════════════════════
 with tab2:
     st.header("⚔️ Model Battle")
-    st.markdown(f"Compare all three models for **{selected_disease}**.")
+    st.markdown(f"Compare all three models for **{selected_disease}** "
+                "side-by-side. Choose the one whose strengths fit your use case.")
 
     disease_metrics = all_metrics.get(disease_key, {})
     rows = []
@@ -742,95 +1020,137 @@ with tab2:
 
     st.dataframe(
         df_metrics.style
-                  .apply(highlight_best, subset=["AUC-ROC"])
+                  .apply(highlight_best, subset=["AUC-ROC", "Recall", "F1 Score"])
                   .format({c: "{:.4f}" for c in df_metrics.columns[1:]}),
-        use_container_width=True
+        use_container_width=True,
+        hide_index=True
     )
+    st.caption("✅ Green cells = best score in that column.")
 
-    st.subheader("📊 Performance Radar")
-    categories = ["Accuracy","Precision","Recall","F1 Score","AUC-ROC"]
-    fig_radar  = go.Figure()
-    for mk, mn, col in zip(MODEL_KEYS, MODEL_TYPES,
-                           ["#1f77b4","#ff7f0e","#2ca02c"]):
-        dm   = disease_metrics.get(mk, {})
-        vals = [dm.get(c.lower().replace(" ","_"), 0) for c in categories]
-        vals += [vals[0]]
-        fig_radar.add_trace(go.Scatterpolar(
-            r=vals, theta=categories+[categories[0]],
-            fill="toself", name=mn, line_color=col
-        ))
-    fig_radar.update_layout(
-        polar=dict(radialaxis=dict(visible=True, range=[0,1])),
-        showlegend=True, height=450
+    radar_col, auc_col = st.columns([3, 2], gap="large")
+
+    with radar_col:
+        st.subheader("📊 Performance Radar")
+        categories = ["Accuracy","Precision","Recall","F1 Score","AUC-ROC"]
+        fig_radar  = go.Figure()
+        for mk, mn, col in zip(MODEL_KEYS, MODEL_TYPES,
+                               ["#1f77b4","#ff7f0e","#2ca02c"]):
+            dm   = disease_metrics.get(mk, {})
+            vals = [dm.get(c.lower().replace(" ","_"), 0) for c in categories]
+            vals += [vals[0]]
+            fig_radar.add_trace(go.Scatterpolar(
+                r=vals, theta=categories+[categories[0]],
+                fill="toself", name=mn, line_color=col,
+                opacity=0.6
+            ))
+        fig_radar.update_layout(
+            polar=dict(radialaxis=dict(visible=True, range=[0,1])),
+            showlegend=True, height=420,
+            margin=dict(t=20, b=20, l=20, r=20)
+        )
+        st.plotly_chart(fig_radar, use_container_width=True)
+
+    with auc_col:
+        st.subheader("🏆 AUC-ROC")
+        fig_auc = px.bar(
+            df_metrics, x="Model", y="AUC-ROC",
+            color="AUC-ROC", color_continuous_scale="Blues", text="AUC-ROC"
+        )
+        fig_auc.update_traces(texttemplate="%{text:.3f}", textposition="outside")
+        fig_auc.update_layout(height=420, showlegend=False,
+                              margin=dict(t=20, b=20, l=20, r=20))
+        st.plotly_chart(fig_auc, use_container_width=True)
+
+    best_recall_idx = df_metrics["Recall"].idxmax()
+    best_auc_idx    = df_metrics["AUC-ROC"].idxmax()
+    best_recall_m   = df_metrics.loc[best_recall_idx, "Model"]
+    best_auc_m      = df_metrics.loc[best_auc_idx, "Model"]
+
+    st.success(
+        f"💡 **Clinical Recommendation for {selected_disease}:** "
+        f"**{best_recall_m}** has the highest recall "
+        f"({df_metrics.loc[best_recall_idx, 'Recall']:.1%}) — best for "
+        f"catching real cases. **{best_auc_m}** has the highest AUC-ROC "
+        f"({df_metrics.loc[best_auc_idx, 'AUC-ROC']:.3f}) — best for "
+        f"overall discrimination."
     )
-    st.plotly_chart(fig_radar, use_container_width=True)
-
-    st.subheader("🏆 AUC-ROC Comparison")
-    fig_auc = px.bar(
-        df_metrics, x="Model", y="AUC-ROC",
-        color="AUC-ROC", color_continuous_scale="Blues", text="AUC-ROC"
-    )
-    fig_auc.update_traces(texttemplate="%{text:.3f}", textposition="outside")
-    fig_auc.update_layout(height=350)
-    st.plotly_chart(fig_auc, use_container_width=True)
-
-    best_mk  = df_metrics.loc[df_metrics["Recall"].idxmax(),  "Model"]
-    best_auc = df_metrics.loc[df_metrics["AUC-ROC"].idxmax(), "Model"]
-    st.info(f"💡 **Clinical Recommendation:** For {selected_disease}, "
-            f"**{best_mk}** achieves the highest recall. "
-            f"**{best_auc}** achieves the highest AUC-ROC.")
-
 
 # ══════════════════════════════════════════════
 # TAB 3 — FAIRNESS AUDIT
 # ══════════════════════════════════════════════
 with tab3:
     st.header("⚖️ Fairness Audit")
-    st.markdown("Age-based fairness analysis using Fairlearn metrics.")
+    st.markdown("Age-based fairness analysis using **Fairlearn** metrics. "
+                "Does this model work equally well for all age groups?")
 
     fd = fairness_data.get(disease_key, {})
     c1, c2, c3 = st.columns(3)
     with c1:
         st.metric("DPD",
                   f"{fd.get('demographic_parity_difference',0):.4f}",
-                  help="Demographic Parity Difference (0 = perfect)")
+                  help="Demographic Parity Difference. 0 = identical "
+                       "positive prediction rate across groups.")
     with c2:
         st.metric("EOD",
                   f"{fd.get('equalized_odds_difference',0):.4f}",
-                  help="Equalized Odds Difference")
+                  help="Equalized Odds Difference. 0 = identical "
+                       "true/false positive rates across groups.")
     with c3:
-        st.metric("Bias Risk", fd.get("bias_risk","Unknown"))
+        bias = fd.get("bias_risk","Unknown")
+        st.metric("Bias Risk", bias)
 
-    st.subheader("📊 Accuracy by Age Group")
-    group_acc = fd.get("group_accuracy", {})
-    if group_acc:
-        df_group = pd.DataFrame(
-            list(group_acc.items()), columns=["Age Group","Accuracy"]
-        )
-        fig_group = px.bar(
-            df_group, x="Age Group", y="Accuracy",
-            color="Accuracy", color_continuous_scale="RdYlGn",
-            range_y=[0,1], text="Accuracy"
-        )
-        fig_group.update_traces(texttemplate="%{text:.3f}",
-                                textposition="outside")
-        fig_group.update_layout(height=350)
-        st.plotly_chart(fig_group, use_container_width=True)
+    interpretations = {
+        "High":     ("🔴", "**High age-based bias.** Performance varies "
+                            "significantly across age groups. Clinical use "
+                            "should account for this disparity."),
+        "Moderate": ("🟠", "**Moderate bias.** Some variation across groups."),
+        "Low":      ("🟢", "**Low bias.** Model performs consistently across "
+                            "age groups.")
+    }
+    icon, text = interpretations.get(
+        fd.get("bias_risk","Low"), ("⚪","Unknown")
+    )
+    st.markdown(f"{icon} {text}")
 
-    st.subheader("🌐 Cross-Disease Fairness Comparison")
-    dpd_vals = [fairness_data.get(dk,{}).get(
-                "demographic_parity_difference",0) for dk in DISEASE_KEYS]
-    eod_vals = [fairness_data.get(dk,{}).get(
-                "equalized_odds_difference",0)    for dk in DISEASE_KEYS]
-    fig_comp = go.Figure()
-    fig_comp.add_trace(go.Bar(name="DPD", x=DISEASES, y=dpd_vals,
-                              marker_color="#1f77b4"))
-    fig_comp.add_trace(go.Bar(name="EOD", x=DISEASES, y=eod_vals,
-                              marker_color="#ff7f0e"))
-    fig_comp.update_layout(barmode="group", height=400,
-                           yaxis_title="Fairness Metric Value")
-    st.plotly_chart(fig_comp, use_container_width=True)
+    st.markdown("---")
 
+    fair_col1, fair_col2 = st.columns([1, 1], gap="large")
+
+    with fair_col1:
+        st.subheader("📊 Accuracy by Age Group")
+        group_acc = fd.get("group_accuracy", {})
+        if group_acc:
+            df_group = pd.DataFrame(
+                list(group_acc.items()), columns=["Age Group","Accuracy"]
+            )
+            fig_group = px.bar(
+                df_group, x="Age Group", y="Accuracy",
+                color="Accuracy", color_continuous_scale="RdYlGn",
+                range_y=[0,1], text="Accuracy"
+            )
+            fig_group.update_traces(texttemplate="%{text:.3f}",
+                                    textposition="outside")
+            fig_group.update_layout(height=350, showlegend=False,
+                                    margin=dict(t=20, b=20, l=20, r=20))
+            st.plotly_chart(fig_group, use_container_width=True)
+
+    with fair_col2:
+        st.subheader("🌐 Cross-Disease Comparison")
+        dpd_vals = [fairness_data.get(dk,{}).get(
+                    "demographic_parity_difference",0) for dk in DISEASE_KEYS]
+        eod_vals = [fairness_data.get(dk,{}).get(
+                    "equalized_odds_difference",0)    for dk in DISEASE_KEYS]
+        fig_comp = go.Figure()
+        fig_comp.add_trace(go.Bar(name="DPD", x=DISEASES, y=dpd_vals,
+                                  marker_color="#1f77b4"))
+        fig_comp.add_trace(go.Bar(name="EOD", x=DISEASES, y=eod_vals,
+                                  marker_color="#ff7f0e"))
+        fig_comp.update_layout(barmode="group", height=350,
+                               yaxis_title="Fairness Metric",
+                               margin=dict(t=20, b=20, l=20, r=20))
+        st.plotly_chart(fig_comp, use_container_width=True)
+
+    st.markdown("---")
     st.subheader("🔍 SHAP Feature Importance")
     shap_bar_path = os.path.join(
         EXPLAINABILITY_DIR, f"{disease_key}_shap_bar.png"
@@ -840,31 +1160,20 @@ with tab3:
     else:
         st.info("SHAP image not found.")
 
-    interpretations = {
-        "High":     ("🔴","High age-based bias. Performance varies across groups."),
-        "Moderate": ("🟠","Moderate bias. Some variation across groups."),
-        "Low":      ("🟢","Low bias. Model performs consistently.")
-    }
-    icon, text = interpretations.get(
-        fd.get("bias_risk","Low"), ("⚪","Unknown")
-    )
-    st.markdown(f"{icon} {text}")
-
-
 # ══════════════════════════════════════════════
-# TAB 4 — WHAT-IF SIMULATOR
-# Now uses cached model loaders so prediction is fast.
-# Gauge title moved out of plot so it never overlaps.
+# TAB 4 — WHAT-IF SIMULATOR (top-10 visible, rest hidden)
 # ══════════════════════════════════════════════
 with tab4:
     st.header("🔬 What-If Simulator")
-    st.markdown("Adjust features and watch the prediction update live.")
+    st.markdown("Adjust features and watch the prediction update live. "
+                "Top features by SHAP importance are shown first.")
 
     sim_profiles    = list(SAMPLE_PATIENTS.get(disease_key, {}).keys())
     sim_profile_sel = st.selectbox(
         "Start from a sample profile",
         ["Custom"] + sim_profiles,
-        key="sim_profile"
+        key="sim_profile",
+        help="Pick a starting point, then adjust sliders to explore."
     )
     sim_defaults = (
         SAMPLE_PATIENTS[disease_key][sim_profile_sel]
@@ -872,91 +1181,142 @@ with tab4:
         else {f: 0.0 for f in features}
     )
 
-    col_sim1, col_sim2 = st.columns([1, 1])
+    col_sim1, col_sim2 = st.columns([1, 1], gap="large")
 
     with col_sim1:
         st.subheader("Adjust Features")
+
+        # Determine priority (top SHAP) vs other features
+        if shap_data and "top_10_features" in shap_data:
+            priority_feats = [f for f in shap_data["top_10_features"]
+                              if f in features]
+        else:
+            priority_feats = features[:10]
+
+        # Cap at 10, ensure all exist in features
+        priority_feats = priority_feats[:10]
+        other_feats = [f for f in features if f not in priority_feats]
+
         sim_values = {}
-        ranges     = FEATURE_RANGES.get(disease_key, {})
+        ranges = FEATURE_RANGES.get(disease_key, {})
 
-        for feat in features:
-            r       = ranges.get(feat, (0.0, 100.0, 0.0))
-            mn_v    = float(r[0])
-            mx_v    = float(r[1])
-            def_v   = float(r[2])
-            default = max(mn_v, min(mx_v, float(sim_defaults.get(feat, def_v))))
+        st.caption(f"⭐ **Top {len(priority_feats)} features** "
+                   f"by SHAP importance — biggest impact on predictions")
 
+        def render_slider(feat, key_prefix=""):
+            r = ranges.get(feat, (0.0, 100.0, 0.0))
+            mn_v = float(r[0])
+            mx_v = float(r[1])
+            def_v = float(r[2])
+            default = max(mn_v, min(mx_v,
+                          float(sim_defaults.get(feat, def_v))))
+            help_text = FEATURE_HELP.get(feat,
+                                         f"Range: {mn_v} to {mx_v}")
             if mx_v == 1.0 and mn_v == 0.0:
-                # Binary feature → checkbox
                 val = st.checkbox(
-                    feat, value=bool(default), key=f"sim_{feat}"
+                    feat, value=bool(default),
+                    key=f"{key_prefix}sim_{feat}",
+                    help=help_text
                 )
-                sim_values[feat] = 1.0 if val else 0.0
+                return 1.0 if val else 0.0
             else:
                 step = 1.0 if (mx_v - mn_v) > 10 else 0.1
-                sim_values[feat] = st.slider(
+                return st.slider(
                     feat, mn_v, mx_v, default, step,
-                    key=f"sim_{feat}"
+                    key=f"{key_prefix}sim_{feat}",
+                    help=help_text
                 )
+
+        for feat in priority_feats:
+            sim_values[feat] = render_slider(feat)
+
+        if other_feats:
+            with st.expander(f"➕ Show {len(other_feats)} additional features",
+                             expanded=False):
+                st.caption("These have lower SHAP impact but you can still "
+                           "adjust them.")
+                for feat in other_feats:
+                    sim_values[feat] = render_slider(feat, "other_")
+
+        # Ensure every feature has a value
+        for feat in features:
+            if feat not in sim_values:
+                r = ranges.get(feat, (0.0, 1.0, 0.0))
+                sim_values[feat] = float(r[2])
 
     with col_sim2:
         st.subheader("Live Prediction")
 
-        sim_patient_vals       = [sim_values[f] for f in features]
-        sim_prob, sim_pred     = make_prediction(
+        sim_patient_vals = [sim_values[f] for f in features]
+        sim_prob, sim_pred = make_prediction(
             disease_key, model_key, sim_patient_vals, features
         )
 
         if sim_prob is None:
-            st.error("Model could not be loaded. "
-                     "Check that .pkl files exist in models/")
+            st.error("Model could not be loaded.")
             sim_prob, sim_pred = 0.5, 0
 
-        sim_risk = prob_to_risk(sim_prob)
+        sim_risk = prob_to_risk(sim_prob, threshold)
 
-        # Title outside plot — never overlaps with gauge
-        st.markdown("#### Disease Probability")
+        # Big visual outcome
+        outcome_icon = "⚠️" if sim_pred == 1 else "✅"
+        outcome_text = "POSITIVE" if sim_pred == 1 else "NEGATIVE"
+        outcome_color = "#dc3545" if sim_pred == 1 else "#28a745"
+
+        st.markdown(
+            f"""
+            <div style="text-align:center;padding:0.5rem 0;">
+                <div style="font-size:1.2rem;color:{outcome_color};
+                            font-weight:600;">
+                    {outcome_icon} {outcome_text}
+                </div>
+                <div class="big-prediction"
+                     style="color:{risk_colour(sim_risk)};font-size:2.5rem;">
+                    {sim_prob*100:.1f}%
+                </div>
+                <div class="big-prediction-sub">
+                    Risk: <b>{sim_risk}</b> ·
+                    Threshold: <b>{threshold*100:.0f}%</b>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+        # Gauge with proper threshold
+        threshold_pct = threshold * 100
         fig_sim = go.Figure(go.Indicator(
             mode="gauge+number",
             value=sim_prob * 100,
-            number={"suffix": "%", "font": {"size": 32}},
+            number={"suffix": "%", "font": {"size": 28}},
             gauge={
-                "axis":  {"range": [0,100], "tickwidth": 1},
-                "bar":   {"color": risk_colour(sim_risk), "thickness": 0.7},
+                "axis":  {"range": [0, 100], "tickwidth": 1},
+                "bar":   {"color": risk_colour(sim_risk),
+                          "thickness": 0.7},
                 "steps": [
-                    {"range": [0,  40], "color": "#e8f5e9"},
-                    {"range": [40, 60], "color": "#fff3e0"},
-                    {"range": [60,100], "color": "#ffebee"},
+                    {"range": [0, max(0, threshold_pct - 15)],
+                     "color": "#e8f5e9"},
+                    {"range": [max(0, threshold_pct - 15), threshold_pct],
+                     "color": "#fff3e0"},
+                    {"range": [threshold_pct, 100],
+                     "color": "#ffebee"},
                 ],
                 "threshold": {
-                    "line": {"color": "black", "width": 3},
-                    "thickness": 0.75,
-                    "value": sim_prob * 100
+                    "line": {"color": "black", "width": 4},
+                    "thickness": 0.85,
+                    "value": threshold_pct
                 }
             }
         ))
         fig_sim.update_layout(
-            height=300,
-            margin=dict(t=20, b=20, l=40, r=40),
+            height=240,
+            margin=dict(t=10, b=10, l=30, r=30),
             paper_bgcolor="rgba(0,0,0,0)"
         )
         st.plotly_chart(fig_sim, use_container_width=True)
 
-        pred_label = "⚠️ POSITIVE" if sim_pred == 1 else "✅ NEGATIVE"
-        pred_color = "#dc3545"     if sim_pred == 1 else "#28a745"
-        st.markdown(
-            f'<div style="background:{pred_color};color:white;'
-            f'padding:1rem;border-radius:10px;text-align:center;'
-            f'font-size:1.5rem;">{pred_label}</div>',
-            unsafe_allow_html=True
-        )
-        st.markdown(
-            f"**Confidence:** {sim_prob*100:.1f}%  "
-            f"| **Risk:** {sim_risk}"
-        )
-
         if shap_data is not None:
-            st.subheader("Feature Importance (SHAP)")
+            st.markdown("##### Feature Impact (SHAP)")
             importance = shap_data["feature_importance"]
             top_feats  = list(importance.keys())[:6]
             df_shap    = pd.DataFrame({
@@ -965,17 +1325,206 @@ with tab4:
             })
             st.dataframe(df_shap, use_container_width=True, hide_index=True)
 
-
 # ══════════════════════════════════════════════
-# TAB 5 — PREDICTION EXPLAINER
-# Q&A is now stateful — same question gets a different
-# angle each time, history is preserved, conversation feel.
+# TAB 5 — PREDICTION EXPLAINER (Q&A at top, more prominent)
 # ══════════════════════════════════════════════
 with tab5:
     st.header("💬 Prediction Explainer")
-    st.markdown("Plain-English explanation from SHAP analysis.")
+    st.markdown("Plain-English explanation from SHAP analysis. "
+                "Ask questions about the model below.")
 
-    col_e1, col_e2 = st.columns([1, 1])
+    # ── Q&A FIRST — most engaging feature, top of page ───────────
+    st.subheader("💬 Ask About This Prediction")
+
+    qa_col1, qa_col2 = st.columns([5, 1])
+    with qa_col1:
+        user_q = st.text_input(
+            "Type a question",
+            placeholder="e.g. Why is BMI important?  What does recall mean?",
+            key="qa_input",
+            label_visibility="collapsed"
+        )
+    with qa_col2:
+        ask_btn = st.button("Ask", use_container_width=True, type="primary")
+
+    if ask_btn and user_q and shap_data is not None:
+        importance    = shap_data["feature_importance"]
+        all_feat_keys = list(importance.keys())
+        top5          = shap_data["top_5_features"]
+        last_pred     = st.session_state.get("t1_pred", None)
+        last_prob     = st.session_state.get("t1_prob", None)
+        q_lower       = user_q.lower()
+
+        prev_questions = [h["q"].lower()
+                          for h in st.session_state["qa_history"]]
+        is_repeat = any(q_lower in pq or pq in q_lower
+                        for pq in prev_questions)
+        repeat_note = ("\n\n*ℹ️ Similar question asked before — "
+                       "here's a different angle.*"
+                       if is_repeat else "")
+
+        answer = ""
+        matched_feat = next(
+            (f for f in all_feat_keys if f.lower() in q_lower), None
+        )
+
+        # 1. Feature-specific
+        if matched_feat:
+            val      = importance[matched_feat]
+            rank     = all_feat_keys.index(matched_feat) + 1
+            strength = ("very strong" if rank <= 3
+                        else "moderate" if rank <= 8 else "minor")
+            in_top5  = matched_feat in top5
+            repeat_count = sum(
+                1 for pq in prev_questions
+                if matched_feat.lower() in pq
+            )
+
+            if repeat_count == 0:
+                answer = f"""
+**About: {matched_feat}**
+
+Ranked **#{rank}** out of {len(all_feat_keys)} features
+(SHAP importance: `{val:.4f}`) — **{strength}** influence on the model's decision.
+
+{"⭐ This is a top-5 driver for " + selected_disease + " predictions." if in_top5 else "This feature has secondary influence."}
+"""
+            elif repeat_count == 1:
+                top_val = importance[top5[0]]
+                ratio = val / top_val if top_val > 0 else 0
+                answer = f"""
+**More on {matched_feat}** (relative comparison)
+
+Compared to the most important feature (`{top5[0]}`), this one carries
+**{ratio*100:.1f}%** of its influence. In clinical terms, {matched_feat}
+contributes meaningfully but isn't the dominant signal.
+"""
+            else:
+                answer = f"""
+**Technical view of {matched_feat}**
+
+Mean absolute SHAP value: `{val:.4f}`. This represents the average impact
+this feature has on pushing predictions toward the positive class
+(in log-odds for tree models, in linear contribution for LR).
+"""
+            if last_pred is not None:
+                outcome = "positive" if last_pred == 1 else "negative"
+                answer += (f"\n\n**Current case context**: prediction is "
+                           f"**{outcome}** ({last_prob*100:.1f}% confidence).")
+
+        # 2. AUC
+        elif any(w in q_lower for w in ["auc","roc"]):
+            auc = m.get("auc_roc", 0)
+            quality = ('excellent' if auc>=0.85
+                       else 'good' if auc>=0.75 else 'moderate')
+            answer = f"""
+**AUC-ROC for {selected_disease} ({selected_model_name}): `{auc:.3f}`**
+
+This measures how well the model **ranks** a positive case higher than
+a negative one. 1.0 = perfect, 0.5 = random guessing.
+
+This model is **{quality}** at discrimination — it correctly orders a
+positive case above a negative one **{auc*100:.1f}%** of the time.
+"""
+        # 3. Recall
+        elif any(w in q_lower for w in ["recall","sensitivity","miss"]):
+            recall = m.get("recall", 0)
+            answer = f"""
+**Recall (Sensitivity) for {selected_disease}: `{recall*100:.1f}%`**
+
+Out of every 100 real {selected_disease.lower()} cases, this model catches
+**{recall*100:.0f}** of them. The remaining **{(1-recall)*100:.0f}** are
+missed (false negatives).
+
+In medical screening, recall matters more than precision — a missed
+disease is worse than a false alarm.
+"""
+        # 4. Bias
+        elif any(w in q_lower for w in ["bias","fair","age","group"]):
+            fd_q   = fairness_data.get(disease_key, {})
+            bias_r = fd_q.get("bias_risk","Unknown")
+            dpd    = fd_q.get("demographic_parity_difference",0)
+            answer = f"""
+**Fairness — {selected_disease}**
+
+Bias Risk: **{bias_r}**
+DPD: `{dpd:.4f}` — positive prediction rate differs by
+**{dpd*100:.1f} percentage points** across age groups.
+
+{"⚠️ High bias detected — significant variation by age group." if bias_r=="High" else "✅ Low bias — consistent performance across groups."}
+"""
+        # 5. Threshold
+        elif any(w in q_lower for w in ["threshold","cutoff","boundary"]):
+            answer = f"""
+**Decision threshold: `{threshold:.2f}` ({threshold*100:.0f}%)**
+
+Probabilities above this value are flagged as positive. The default is 0.5,
+but {selected_disease} {selected_model_name} uses **{threshold:.2f}**
+{"(custom threshold tuned for optimal F1 on imbalanced data)" if threshold != 0.5 else "(standard threshold)"}.
+"""
+        # 6. Why / how
+        elif any(w in q_lower for w in
+                 ["predict","result","confidence","why","how"]):
+            if last_pred is not None:
+                outcome  = "POSITIVE" if last_pred == 1 else "NEGATIVE"
+                top_feat = top5[0]
+                top_val  = importance[top_feat]
+                answer = f"""
+**Last prediction: {outcome} ({last_prob*100:.1f}% confidence)**
+
+The dominant feature driving this prediction is **{top_feat}**
+(SHAP importance: `{top_val:.4f}`).
+
+Top 5 contributing factors: {", ".join(f"`{f}`" for f in top5)}
+
+Model recall ({m.get('recall',0)*100:.1f}%) means it catches that
+fraction of real cases.
+"""
+            else:
+                answer = "ℹ️ Generate a prediction in **Tab 1** first."
+        # 7. Fallback
+        else:
+            top_feat = top5[0]
+            answer = f"""
+**Quick Summary — {selected_disease} ({selected_model_name})**
+
+- Top feature: **{top_feat}** (SHAP: `{importance[top_feat]:.4f}`)
+- Top 5: {", ".join(f"`{f}`" for f in top5)}
+- AUC-ROC: `{m.get('auc_roc',0):.3f}` | Recall: `{m.get('recall',0)*100:.1f}%`
+
+**Try asking:**
+- "Why is {top_feat} important?"
+- "What does AUC mean?"
+- "Is there age bias?"
+- "What's the threshold?"
+"""
+
+        st.session_state["qa_history"].append({
+            "q": user_q,
+            "a": answer + repeat_note
+        })
+        st.rerun()
+    elif ask_btn and not user_q:
+        st.warning("Please type a question first.")
+    elif ask_btn and shap_data is None:
+        st.error("SHAP data not available.")
+
+    # Render conversation (newest first)
+    if st.session_state["qa_history"]:
+        clear_col1, clear_col2 = st.columns([5, 1])
+        with clear_col2:
+            if st.button("🗑️ Clear", use_container_width=True):
+                st.session_state["qa_history"] = []
+                st.rerun()
+
+        for i, qa in enumerate(reversed(st.session_state["qa_history"])):
+            with st.expander(f"❓ {qa['q']}", expanded=(i == 0)):
+                st.markdown(qa["a"])
+
+    st.markdown("---")
+
+    # ── Below: model summary and explanation ──────────────────────
+    col_e1, col_e2 = st.columns([1, 1], gap="large")
 
     with col_e1:
         st.subheader("Model Summary")
@@ -983,6 +1532,7 @@ with tab5:
         st.markdown(f"**Model:** {selected_model_name}")
         st.markdown(f"**AUC-ROC:** {m.get('auc_roc',0):.3f}")
         st.markdown(f"**Recall:** {m.get('recall',0)*100:.1f}%")
+        st.markdown(f"**Decision Threshold:** {threshold:.2f}")
 
         if shap_data is not None:
             st.subheader("Top Risk Factors")
@@ -994,12 +1544,10 @@ with tab5:
 
     with col_e2:
         st.subheader("Plain-English Explanation")
-
         if shap_data is not None:
             importance = shap_data["feature_importance"]
             top5       = shap_data["top_5_features"]
             base_value = shap_data.get("base_value", 0.0)
-
             last_prob = st.session_state.get("t1_prob", None)
             last_pred = st.session_state.get("t1_pred", None)
 
@@ -1007,7 +1555,7 @@ with tab5:
                 f"**{'POSITIVE' if last_pred==1 else 'NEGATIVE'}** "
                 f"({last_prob*100:.1f}% confidence)"
                 if last_pred is not None
-                else "Not yet predicted — generate label in Tab 1 first"
+                else "*Not yet predicted — generate a label in Tab 1 first.*"
             )
 
             lines = [
@@ -1018,8 +1566,6 @@ with tab5:
             st.markdown(f"""
 **Last prediction:** {result_str}
 
-**Why did the model make this prediction?**
-
 The model analysed {len(features)} features. Top 5 drivers:
 
 {"".join(chr(10) + l for l in lines)}
@@ -1027,222 +1573,19 @@ The model analysed {len(features)} features. Top 5 drivers:
 **Base risk** (average patient): {base_value*100:.1f}%
 
 *This tool is for screening only. Always review with a clinician.*
-*Accuracy: {m.get('accuracy',0)*100:.1f}%  |  Recall: {m.get('recall',0)*100:.1f}%*
 """)
 
             wf_path = os.path.join(
                 EXPLAINABILITY_DIR, f"{disease_key}_shap_waterfall.png"
             )
             if os.path.exists(wf_path):
-                st.subheader("Single Patient Breakdown (SHAP Waterfall)")
+                st.markdown("##### Single Patient Breakdown (SHAP Waterfall)")
                 st.image(wf_path, use_container_width=True)
         else:
             st.warning("SHAP data not found.")
 
-    # ── Stateful Q&A with conversation history ───────────
-    st.markdown("---")
-    st.subheader("💬 Ask About This Prediction")
-
-    if "qa_history" not in st.session_state:
-        st.session_state["qa_history"] = []
-
-    user_q = st.text_input(
-        "Type a question...",
-        placeholder="e.g. Why is BMI important?  What does recall mean?",
-        key="qa_input"
-    )
-
-    col_ask, col_clear = st.columns([4, 1])
-    with col_ask:
-        ask_btn = st.button("Get Answer", use_container_width=True,
-                            type="primary")
-    with col_clear:
-        clear_btn = st.button("🗑️ Clear", use_container_width=True)
-
-    if clear_btn:
-        st.session_state["qa_history"] = []
-        st.rerun()
-
-    if ask_btn:
-        if not user_q:
-            st.warning("Please type a question first.")
-        elif shap_data is None:
-            st.error("SHAP data not available.")
-        else:
-            importance    = shap_data["feature_importance"]
-            all_feat_keys = list(importance.keys())
-            top5          = shap_data["top_5_features"]
-            last_pred     = st.session_state.get("t1_pred", None)
-            last_prob     = st.session_state.get("t1_prob", None)
-            q_lower       = user_q.lower()
-
-            prev_questions = [h["q"].lower()
-                              for h in st.session_state["qa_history"]]
-            is_repeat = any(q_lower in pq or pq in q_lower
-                            for pq in prev_questions)
-            repeat_note = ""
-            if is_repeat:
-                repeat_note = ("\n\n*ℹ️ You asked something similar before — "
-                               "here's a different angle on it.*")
-
-            answer = ""
-            matched_feat = next(
-                (f for f in all_feat_keys if f.lower() in q_lower), None
-            )
-
-            # 1. Feature-specific question
-            if matched_feat:
-                val      = importance[matched_feat]
-                rank     = all_feat_keys.index(matched_feat) + 1
-                strength = ("very strong" if rank <= 3
-                            else "moderate" if rank <= 8 else "minor")
-                in_top5  = matched_feat in top5
-
-                # Vary the angle based on how many times this feature was asked
-                repeat_count = sum(
-                    1 for pq in prev_questions
-                    if matched_feat.lower() in pq
-                )
-
-                if repeat_count == 0:
-                    answer = f"""
-**About: {matched_feat}**
-
-Ranked **#{rank}** out of {len(all_feat_keys)} features
-(SHAP importance: `{val:.4f}`) — **{strength}** influence on the model's decision.
-
-{"⭐ This is a top-5 driver for " + selected_disease + " predictions." if in_top5 else "This feature has secondary influence."}
-"""
-                elif repeat_count == 1:
-                    top_val = importance[top5[0]]
-                    ratio = val / top_val if top_val > 0 else 0
-                    answer = f"""
-**More on {matched_feat}** (relative comparison)
-
-Compared to the most important feature (`{top5[0]}`), this one carries
-**{ratio*100:.1f}%** of its influence. In clinical terms, {matched_feat}
-contributes meaningfully but isn't the dominant signal.
-
-The model would still flag many cases correctly even without this feature,
-but its inclusion improves accuracy.
-"""
-                else:
-                    answer = f"""
-**Technical view of {matched_feat}**
-
-Mean absolute SHAP value: `{val:.4f}`. This represents the average impact
-this feature has on pushing predictions toward the positive class
-(in log-odds for tree models, in linear contribution for LR).
-
-Across the {shap_data.get('n_samples_used', 'sample')} test patients analysed,
-this feature consistently appeared in the prediction reasoning.
-"""
-
-                if last_pred is not None:
-                    outcome = "positive" if last_pred == 1 else "negative"
-                    answer += (f"\n\n**Current case context**: prediction is "
-                               f"**{outcome}** ({last_prob*100:.1f}% confidence).")
-
-            # 2. AUC / ROC question
-            elif any(w in q_lower for w in ["auc","roc"]):
-                auc = m.get("auc_roc", 0)
-                quality = ('excellent' if auc>=0.85
-                           else 'good' if auc>=0.75 else 'moderate')
-                answer = f"""
-**AUC-ROC for {selected_disease} ({selected_model_name}): `{auc:.3f}`**
-
-This measures how well the model **ranks** a positive case higher than
-a negative one. 1.0 is perfect, 0.5 is random guessing.
-
-This model is **{quality}** at discrimination — it correctly orders a
-positive case above a negative one **{auc*100:.1f}%** of the time.
-"""
-
-            # 3. Recall / sensitivity
-            elif any(w in q_lower for w in ["recall","sensitivity","miss"]):
-                recall = m.get("recall", 0)
-                answer = f"""
-**Recall (Sensitivity) for {selected_disease}: `{recall*100:.1f}%`**
-
-Out of every 100 real {selected_disease.lower()} cases, this model catches
-**{recall*100:.0f}** of them. The remaining **{(1-recall)*100:.0f}** are
-missed (false negatives).
-
-In medical screening, recall matters more than precision — a missed
-disease is worse than a false alarm.
-"""
-
-            # 4. Bias / fairness / age
-            elif any(w in q_lower for w in ["bias","fair","age","group"]):
-                fd_q   = fairness_data.get(disease_key, {})
-                bias_r = fd_q.get("bias_risk","Unknown")
-                dpd    = fd_q.get("demographic_parity_difference",0)
-                answer = f"""
-**Fairness — {selected_disease}**
-
-Bias Risk: **{bias_r}**
-DPD: `{dpd:.4f}` — positive prediction rate differs by
-**{dpd*100:.1f} percentage points** across age groups.
-
-{"⚠️ High bias detected — significant variation by age group. Clinical use should account for this." if bias_r=="High" else "✅ Low bias — consistent performance across groups."}
-"""
-
-            # 5. Prediction / why / confidence
-            elif any(w in q_lower for w in
-                     ["predict","result","confidence","why","how"]):
-                if last_pred is not None:
-                    outcome  = "POSITIVE" if last_pred == 1 else "NEGATIVE"
-                    top_feat = top5[0]
-                    top_val  = importance[top_feat]
-                    answer = f"""
-**Last prediction: {outcome} ({last_prob*100:.1f}% confidence)**
-
-The dominant feature driving this prediction is **{top_feat}**
-(SHAP importance: `{top_val:.4f}`).
-
-Top 5 contributing factors: {", ".join(f"`{f}`" for f in top5)}
-
-Model recall ({m.get('recall',0)*100:.1f}%) means it catches that
-fraction of real cases.
-"""
-                else:
-                    answer = "ℹ️ Generate a prediction in **Tab 1** first, then ask again."
-
-            # 6. Generic fallback
-            else:
-                top_feat = top5[0]
-                answer = f"""
-**Quick Summary — {selected_disease} ({selected_model_name})**
-
-- Top feature: **{top_feat}** (SHAP: `{importance[top_feat]:.4f}`)
-- Top 5: {", ".join(f"`{f}`" for f in top5)}
-- AUC-ROC: `{m.get('auc_roc',0):.3f}` | Recall: `{m.get('recall',0)*100:.1f}%`
-
-**Try asking:**
-- "Why is {top_feat} important?"
-- "What does AUC mean?"
-- "Is there age bias?"
-- "Why this prediction?"
-"""
-
-            # Append to history
-            st.session_state["qa_history"].append({
-                "q": user_q,
-                "a": answer + repeat_note
-            })
-
-    # Render conversation history (newest first, only newest expanded)
-    if st.session_state["qa_history"]:
-        st.markdown("#### 📜 Conversation")
-        for i, qa in enumerate(reversed(st.session_state["qa_history"])):
-            with st.expander(f"❓ {qa['q']}", expanded=(i == 0)):
-                st.markdown(qa["a"])
-
-
 # ══════════════════════════════════════════════
 # TAB 6 — COMPLIANCE REPORT + PROFESSIONAL PDF
-# Now uses ReportLab — proper tables, page numbers,
-# Unicode support, color-coded compliance status.
 # ══════════════════════════════════════════════
 with tab6:
     st.header("📄 Compliance Report")
@@ -1294,11 +1637,42 @@ with tab6:
         df_full.style.format({
             c: "{:.4f}" for c in ["Accuracy","Recall","AUC-ROC"]
         }),
-        use_container_width=True
+        use_container_width=True,
+        hide_index=True
     )
 
+    # Copy summary feature
     st.markdown("---")
-    st.subheader("📥 Export as PDF")
+    st.subheader("📋 Quick Summary (for clinical notes)")
+    last_pred_t6 = st.session_state.get("t1_pred", None)
+    last_prob_t6 = st.session_state.get("t1_prob", None)
+    last_risk_t6 = st.session_state.get("t1_risk", "N/A")
+
+    if last_pred_t6 is not None:
+        if shap_data:
+            top_factors = ", ".join(shap_data['top_5_features'][:3])
+        else:
+            top_factors = "N/A"
+        summary_text = (
+            f"MediSight AI - {selected_disease} Screening\n"
+            f"Model: {selected_model_name}\n"
+            f"Result: {'POSITIVE' if last_pred_t6 == 1 else 'NEGATIVE'}\n"
+            f"Confidence: {last_prob_t6*100:.1f}%\n"
+            f"Risk Level: {last_risk_t6}\n"
+            f"Decision Threshold: {threshold:.2f}\n"
+            f"Top Risk Factors: {top_factors}\n"
+            f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+            f"AUC-ROC: {m.get('auc_roc',0):.3f}, "
+            f"Recall: {m.get('recall',0)*100:.1f}%"
+        )
+        st.code(summary_text, language=None)
+        st.caption("☝️ Click the copy icon in the top-right of the box "
+                   "to copy this summary.")
+    else:
+        st.info("Generate a prediction in Tab 1 to see the summary here.")
+
+    st.markdown("---")
+    st.subheader("📥 Export Full Report as PDF")
 
     if st.button("📄 Generate PDF Report", use_container_width=True,
                  type="primary"):
@@ -1347,7 +1721,7 @@ with tab6:
 
             story = []
 
-            # ── Header ────────────────────────────────────
+            # Header
             story.append(Paragraph("MediSight AI", title_style))
             story.append(Paragraph(
                 "Transparency Label for Healthcare Prediction Systems",
@@ -1362,12 +1736,8 @@ with tab6:
             ))
             story.append(Spacer(1, 0.5*cm))
 
-            # ── Section 1: Prediction Summary ─────────────
+            # 1. Prediction Summary
             story.append(Paragraph("1. Prediction Summary", section_style))
-            last_pred_t6 = st.session_state.get("t1_pred", None)
-            last_prob_t6 = st.session_state.get("t1_prob", None)
-            last_risk_t6 = st.session_state.get("t1_risk", "N/A")
-
             if last_pred_t6 is not None:
                 outcome = ("POSITIVE - Disease Detected"
                            if last_pred_t6 == 1
@@ -1379,6 +1749,7 @@ with tab6:
                     ["Result", outcome],
                     ["Confidence", f"{last_prob_t6*100:.1f}%"],
                     ["Risk Level", last_risk_t6],
+                    ["Decision Threshold", f"{threshold:.2f}"],
                 ]
             else:
                 pred_data = [
@@ -1388,7 +1759,6 @@ with tab6:
                     ["Status",
                      "No prediction generated yet - run Tab 1 first"],
                 ]
-
             pred_table = Table(pred_data, colWidths=[6*cm, 10*cm])
             pred_table.setStyle(TableStyle([
                 ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#1f4e79")),
@@ -1403,7 +1773,7 @@ with tab6:
             ]))
             story.append(pred_table)
 
-            # ── Section 2: Model Performance ──────────────
+            # 2. Performance
             story.append(Paragraph("2. Model Performance Metrics",
                                    section_style))
             dm_pdf = all_metrics.get(disease_key, {}).get(model_key, {})
@@ -1433,7 +1803,7 @@ with tab6:
             ]))
             story.append(perf_table)
 
-            # ── Section 3: Fairness Analysis ──────────────
+            # 3. Fairness
             story.append(Paragraph("3. Fairness Analysis (Age-based)",
                                    section_style))
             fd_pdf = fairness_data.get(disease_key, {})
@@ -1468,7 +1838,7 @@ with tab6:
             ]))
             story.append(fair_table)
 
-            # ── Section 4: SHAP Top Features ──────────────
+            # 4. SHAP
             if shap_data is not None:
                 story.append(Paragraph(
                     "4. Top Risk Factors (SHAP Analysis)",
@@ -1478,7 +1848,6 @@ with tab6:
                 shap_rows = [["Rank", "Feature", "SHAP Importance"]]
                 for i, feat in enumerate(shap_data["top_5_features"], 1):
                     shap_rows.append([str(i), feat, f"{imp_pdf[feat]:.4f}"])
-
                 shap_table = Table(shap_rows,
                                    colWidths=[1.5*cm, 10.5*cm, 4*cm])
                 shap_table.setStyle(TableStyle([
@@ -1495,7 +1864,7 @@ with tab6:
                 ]))
                 story.append(shap_table)
 
-            # ── Section 5: EU AI Act Compliance ──────────
+            # 5. Compliance
             story.append(PageBreak())
             story.append(Paragraph("5. EU AI Act 2024 Compliance",
                                    section_style))
@@ -1524,7 +1893,7 @@ with tab6:
             comp_table.setStyle(TableStyle(comp_style))
             story.append(comp_table)
 
-            # ── Disclaimer ────────────────────────────────
+            # Disclaimer
             story.append(Spacer(1, 1*cm))
             story.append(Paragraph(
                 "DISCLAIMER: This report is generated by an AI screening "
@@ -1535,7 +1904,6 @@ with tab6:
                 disclaimer_style
             ))
 
-            # ── Page numbering ────────────────────────────
             def add_page_number(canvas, doc):
                 canvas.saveState()
                 canvas.setFont('Helvetica', 8)

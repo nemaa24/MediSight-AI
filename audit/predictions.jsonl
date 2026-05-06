@@ -1,0 +1,4 @@
+{"timestamp": "2026-05-01T12:10:15.037001Z", "disease": "diabetes", "model": "lr", "probability": 1.0, "prediction": 1, "risk_level": "High"}
+{"timestamp": "2026-05-01T12:17:43.523766Z", "disease": "liver", "model": "lr", "probability": 0.2419, "prediction": 0, "risk_level": "Low"}
+{"timestamp": "2026-05-01T18:44:37.520352Z", "disease": "diabetes", "model": "lr", "probability": 0.9998, "prediction": 1, "risk_level": "High"}
+{"timestamp": "2026-05-04T08:16:01.536385Z", "disease": "diabetes", "model": "lr", "probability": 1.0, "prediction": 1, "risk_level": "High"}
