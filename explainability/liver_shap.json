@@ -4,14 +4,14 @@
     "base_value": 0.49993526492899093,
     "feature_importance": {
         "Direct Bilirubin": 0.070774,
-        "Total Bilirubin": 0.067473,
-        "Sgpt Alamine Aminotransferase": 0.053591,
+        "Total Bilirubin": 0.067475,
+        "Sgpt Alamine Aminotransferase": 0.053592,
         "Alkphos Alkaline Phosphotase": 0.052041,
         "Sgot Aspartate Aminotransferase": 0.048377,
         "A/G Ratio Albumin and Globulin Ratio": 0.01857,
         "ALB Albumin": 0.016165,
-        "Total Protiens": 0.013709,
-        "Age of the patient": 0.000163,
+        "Total Protiens": 0.013708,
+        "Age of the patient": 0.000161,
         "Gender": 4e-05
     },
     "top_5_features": [
